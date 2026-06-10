@@ -128,8 +128,21 @@ npm run setup -- --config-only --from-config config.json
 | `visitLogFile` | TSV path for click/capture tracking (default: `visits.tsv`) |
 | `botguard.enabled` | Block bots/scanners on `/share` (default: `true`) |
 | `botguard.safelinksBlock` | Block Microsoft Safe Links detonation (default: `true`) |
-| `botguard.jsChallenge` | Require JS cookie challenge before lure (default: `false`) |
+| `botguard.jsChallenge` | Optional JS “Verifying your browser…” page before lure (default: `false`) |
 | `botguard.blockedJa3` | Block TLS JA3 hashes (requires `X-JA3-Fingerprint` header from edge) |
+
+| `microsoftTenant` | Set by setup — used for OAuth endpoints and tenant-branded lure page |
+| `tenantBranding` | Cached logo/background from Microsoft login (auto-fetched at setup/start) |
+
+## Tenant-branded lure page
+
+Setup discovers the target tenant (`--tenant gipi.com`) and pulls the **same logo and background** Microsoft uses on that tenant's sign-in page (from Entra company branding). Examples:
+
+- Custom **banner logo** instead of the Microsoft lockup
+- Tenant **background color** (e.g. gipi `#97D700`, Redline `#04212a`)
+- Microsoft **illustration** overlay matching `login.microsoftonline.com`
+
+Branding is cached in `config.json` as `tenantBranding` and refreshed in the background on server start. Re-run `npm run setup` after the client changes their Entra branding.
 
 ## Bot protection
 
@@ -143,7 +156,7 @@ Default behavior (`botguard.enabled: true`, `safelinksBlock: true`, `jsChallenge
 - Block known scanner UAs (curl, python-requests, headless Chrome, etc.)
 - Block empty User-Agent or missing `Accept-Language` / `Accept`
 
-Optional **`jsChallenge: true`** — serve a short “Verifying your browser…” page that sets a cookie before showing the lure. Use if you still see scanner noise; adds one reload for real users.
+Optional **`jsChallenge: true`** — first visit shows “Verifying your browser…”, sets a cookie, reloads, then shows the lure. Use if scanners still appear in `visits.tsv`; adds one extra step for real users.
 
 Blocked requests are logged:
 

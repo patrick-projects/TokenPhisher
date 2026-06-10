@@ -10,6 +10,7 @@ import { fileURLToPath } from 'url';
 import { parseArgs } from 'util';
 import acme from 'acme-client';
 import { publicUrl } from './smoke-test.mjs';
+import { fetchTenantBranding } from './tenant-branding.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = __dirname;
@@ -95,6 +96,12 @@ const DEFAULT_CONFIG = {
   geoipallowlist: ['US', 'CA'],
   validateTokens: true,
   graphValidationScope: 'https://graph.microsoft.com/.default offline_access',
+  botguard: {
+    enabled: true,
+    jsChallenge: false,
+    safelinksBlock: true,
+    blockedJa3: [],
+  },
 };
 
 function printHelp() {
@@ -901,6 +908,17 @@ async function main() {
       console.log(`  tokenUrl: ${config.tokenUrl}`);
       console.log(`  deviceCodeUrl: ${config.deviceCodeUrl}`);
       console.log(`  clientId: ${config.clientId} (MS Office public client — override with --client-id)`);
+      try {
+        config.tenantBranding = await fetchTenantBranding(
+          discovery.tenant,
+          config.clientId,
+          config.userAgent
+        );
+        console.log(`  tenant logo: ${config.tenantBranding.bannerLogo || 'Microsoft default'}`);
+        console.log(`  tenant background: ${config.tenantBranding.backgroundColor}`);
+      } catch (error) {
+        console.warn(`  tenant branding: could not fetch (${error.message})`);
+      }
     }
   }
 
