@@ -896,14 +896,24 @@ async function main() {
   writeConfigJson(config);
   updateServerJs(config);
 
-  console.log('\nSetup complete. Start the server with: npm start');
+  console.log('\nSetup complete.');
+
+  const hostname = config.tlsHostname || domain;
+  if (hostname) {
+    const scheme = config.testMode ? 'http' : 'https';
+    const port = config.testMode ? config.httpPort : config.httpsPort;
+    const defaultPort = config.testMode ? 80 : 443;
+    const portSuffix = port === defaultPort ? '' : `:${port}`;
+    console.log(`Victim URL (after start): ${scheme}://${hostname}${portSuffix}/share`);
+  }
+
   if (config.testMode) {
-    console.log(`Listening on HTTP port ${config.httpPort}`);
+    console.log(`Configured for HTTP on port ${config.httpPort}. Start with: npm start`);
   } else if (tlsMode === 'cloudflare-origin') {
-    console.log(`Listening on HTTPS port ${config.httpsPort}`);
+    console.log(`Configured for HTTPS on port ${config.httpsPort}. Start with: sudo npm start`);
     console.log('Ensure Cloudflare SSL/TLS mode is Full (strict) for origin certificates.');
   } else {
-    console.log(`Listening on HTTPS port ${config.httpsPort}`);
+    console.log(`Configured for HTTPS on port ${config.httpsPort}. Start with: sudo npm start`);
     console.log('Ensure the DNS A record is grey cloud (DNS only) for Let\'s Encrypt to work in browsers.');
   }
 }

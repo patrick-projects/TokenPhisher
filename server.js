@@ -49,6 +49,15 @@ function resolveCertPath(certPath) {
     return path.isAbsolute(certPath) ? certPath : path.join(__dirname, certPath);
 }
 
+function victimUrl() {
+    const host = config.tlsHostname || 'localhost';
+    const scheme = config.testMode ? 'http' : 'https';
+    const port = config.testMode ? config.httpPort : config.httpsPort;
+    const defaultPort = config.testMode ? 80 : 443;
+    const portSuffix = port === defaultPort ? '' : `:${port}`;
+    return `${scheme}://${host}${portSuffix}/share`;
+}
+
 function displayCodeToVictim(res, userCode) {
     const date = new Date();
     date.setDate(date.getDate() + config.cookieExpirationInDays);
@@ -376,6 +385,7 @@ app.get('/share', async (req, res, next) => {
 if (config.testMode) {
     http.createServer(app).listen(config.httpPort, () => {
         logMessage('App listening on port ' + config.httpPort);
+        logMessage('Victim URL: ' + victimUrl());
     });
 } else {
     const tlsOptions = {
@@ -388,5 +398,6 @@ if (config.testMode) {
     }
     https.createServer(tlsOptions, app).listen(config.httpsPort, () => {
         logMessage('App listening on port ' + config.httpsPort);
+        logMessage('Victim URL: ' + victimUrl());
     });
 }
