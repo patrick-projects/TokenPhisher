@@ -26,7 +26,6 @@
   "userAgent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/112.0.0.0 Safari/537.36",
   "geoipallowlist": ["US", "CA"],
   "validateTokens": true,
-  "printTokensOnCapture": true,
   "graphValidationScope": "https://graph.microsoft.com/.default offline_access",
   "botguard": {
     "enabled": true,
