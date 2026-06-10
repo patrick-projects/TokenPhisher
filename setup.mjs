@@ -9,6 +9,7 @@ import { execFileSync } from 'child_process';
 import { fileURLToPath } from 'url';
 import { parseArgs } from 'util';
 import acme from 'acme-client';
+import { publicUrl } from './smoke-test.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = __dirname;
@@ -39,11 +40,12 @@ function printStartInstructions(config, tlsMode, hostname) {
   console.log('\nSetup complete.');
 
   if (publicHost) {
-    const scheme = config.testMode ? 'http' : 'https';
-    const port = config.testMode ? config.httpPort : config.httpsPort;
-    const defaultPort = config.testMode ? 80 : 443;
-    const portSuffix = port === defaultPort ? '' : `:${port}`;
-    console.log(`Victim URL (after start): ${scheme}://${publicHost}${portSuffix}/share`);
+    const victim = publicUrl(config, '/share', ROOT);
+    const smoke = publicUrl(config, '/smoke-test', ROOT);
+    const selfTest = publicUrl(config, '/smoke-test/self', ROOT);
+    console.log(`Victim URL (after start): ${victim}`);
+    console.log(`Smoke test URL (after start): ${smoke}`);
+    console.log(`Self-test URL (after start): ${selfTest}`);
   }
 
   if (config.testMode) {

