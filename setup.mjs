@@ -4,6 +4,7 @@ import fs from 'fs';
 import path from 'path';
 import os from 'os';
 import crypto from 'crypto';
+import dns from 'dns/promises';
 import { execFileSync } from 'child_process';
 import { fileURLToPath } from 'url';
 import { parseArgs } from 'util';
@@ -280,19 +281,43 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-function acmeChallengeRecordName(hostname, zoneName) {
-  if (hostname === zoneName) {
-    return '_acme-challenge';
-  }
-  const suffix = `.${zoneName}`;
-  if (hostname.endsWith(suffix)) {
-    return `_acme-challenge.${hostname.slice(0, -suffix.length)}`;
-  }
+function acmeChallengeFqdn(hostname) {
   return `_acme-challenge.${hostname}`;
 }
 
-function dns01Digest(keyAuthorization) {
-  return crypto.createHash('sha256').update(keyAuthorization).digest('base64url');
+function acmeChallengeRecordName(hostname, zoneName) {
+  const fqdn = acmeChallengeFqdn(hostname);
+  if (fqdn === `_acme-challenge.${zoneName}`) {
+    return '_acme-challenge';
+  }
+  const suffix = `.${zoneName}`;
+  if (fqdn.endsWith(suffix)) {
+    return fqdn.slice(0, -suffix.length);
+  }
+  return fqdn;
+}
+
+async function waitForDnsTxt(fqdn, expectedValue, maxWaitMs = 120000) {
+  const start = Date.now();
+  let attempt = 0;
+
+  while (Date.now() - start < maxWaitMs) {
+    attempt += 1;
+    try {
+      const records = await dns.resolveTxt(fqdn);
+      const flat = records.flat();
+      if (flat.includes(expectedValue)) {
+        console.log(`DNS TXT visible at ${fqdn} (attempt ${attempt})`);
+        return;
+      }
+      console.log(`DNS TXT at ${fqdn} not matching yet (attempt ${attempt})`);
+    } catch {
+      console.log(`DNS TXT not found yet at ${fqdn} (attempt ${attempt})`);
+    }
+    await sleep(5000);
+  }
+
+  throw new Error(`Timed out after ${maxWaitMs / 1000}s waiting for DNS TXT at ${fqdn}`);
 }
 
 async function createCloudflareTxtRecord(token, zoneId, recordName, content) {
@@ -360,6 +385,8 @@ async function provisionLetsEncryptCert(token, hostname, certStoreRoot, forceRen
     'Using DNS-01 challenge via Cloudflare. Set your A record to grey cloud (DNS only) so browsers trust the LE cert.'
   );
 
+  acme.setLogger((msg) => console.log(`[acme] ${msg}`));
+
   const accountKey = await getOrCreateAcmeAccountKey(storeDir);
   const [privateKey, csr] = await acme.crypto.createCsr({ commonName: hostname, altNames: [hostname] });
 
@@ -368,9 +395,13 @@ async function provisionLetsEncryptCert(token, hostname, certStoreRoot, forceRen
       ? acme.directory.letsencrypt.staging
       : acme.directory.letsencrypt.production,
     accountKey,
+    backoffAttempts: 15,
+    backoffMin: 5000,
+    backoffMax: 15000,
   });
 
   const challengeRecordName = acmeChallengeRecordName(hostname, zoneName);
+  const challengeFqdn = acmeChallengeFqdn(hostname);
   let challengeRecordId = null;
 
   try {
@@ -383,12 +414,14 @@ async function provisionLetsEncryptCert(token, hostname, certStoreRoot, forceRen
         if (challenge.type !== 'dns-01') {
           return;
         }
-        const txtValue = dns01Digest(keyAuthorization);
-        console.log(`Creating DNS TXT record ${challengeRecordName}.${zoneName} ...`);
+        // keyAuthorization is already the DNS-01 digest for dns-01 challenges.
+        const txtValue = keyAuthorization;
+        console.log(`Creating DNS TXT record ${challengeFqdn} ...`);
         const record = await createCloudflareTxtRecord(token, zoneId, challengeRecordName, txtValue);
         challengeRecordId = record.id;
-        console.log('Waiting 20s for DNS propagation ...');
-        await sleep(20000);
+        console.log(`Waiting for DNS TXT ${challengeFqdn} to propagate ...`);
+        await waitForDnsTxt(challengeFqdn, txtValue);
+        console.log('DNS ready — asking Let\'s Encrypt to verify the challenge ...');
       },
       challengeRemoveFn: async () => {
         if (challengeRecordId) {
