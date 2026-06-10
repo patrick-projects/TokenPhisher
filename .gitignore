@@ -3,5 +3,6 @@ config.json
 certs/
 *.txt
 visits.tsv
+captures.tsv
 *.graph-refresh.json
 .env

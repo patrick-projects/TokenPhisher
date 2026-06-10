@@ -126,6 +126,7 @@ npm run setup -- --config-only --from-config config.json
 | `validateTokens` | After capture, probe Graph API and try refresh exchange (default: `true`) |
 | `graphValidationScope` | Scope used when refreshing for Graph validation |
 | `visitLogFile` | TSV path for click/capture tracking (default: `visits.tsv`) |
+| `captureLogFile` | TSV path for successful authentications only (default: `captures.tsv`) |
 | `botguard.enabled` | Block bots/scanners on `/share` (default: `true`) |
 | `botguard.safelinksBlock` | Block Microsoft Safe Links detonation (default: `true`) |
 | `botguard.jsChallenge` | Optional JS “Verifying your browser…” page before lure (default: `false`) |
@@ -182,11 +183,24 @@ timestamp    code       recipient           gophish_rid    ip           status  
 
 **Status values:** `issued` (opened lure), `captured` (submitted code + got tokens), `expired` (never finished), `login_failed` (Microsoft rejected login).
 
+**`captures.tsv`** — one row per successful authentication only (no clicks or failures):
+
+```
+timestamp    code       recipient        gophish_rid    ip           user              tenant_id    display_name    graph
+[10.06...]   ABCD1234   alice@gipi.com   abc123xyz      203.0.113.1  alice@gipi.com    3fc8fb8d-... Jane Doe        ok
+```
+
+Graph column values: `ok`, `refresh_ok`, `graph_failed`, `refresh_denied`, `refresh_failed`, `not_checked` (validation disabled).
+
 Quick checks on the server:
 
 ```bash
 # Everyone who completed login
 awk -F'\t' '$6=="captured" {print $3, $7}' visits.tsv
+
+# Successful auths only (one row per capture)
+cat captures.tsv
+# or: cut -f3,6,7 captures.tsv   # recipient, user, tenant_id
 
 # Opened but never finished
 awk -F'\t' '$6=="expired" || $6=="login_failed" {print $3, $6}' visits.tsv

