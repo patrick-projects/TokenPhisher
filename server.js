@@ -229,19 +229,38 @@ function pollForAzureTokens(deviceCode, userCode, oauthConfig = config) {
     }, 2000);
 }
 
+function stripAnsi(text) {
+    return String(text).replace(/\x1b\[[0-9;]*m/g, '');
+}
+
+function colorize(text, colorCode) {
+    if (config.colorLog === false || !process.stdout.isTTY) {
+        return text;
+    }
+    return `\x1b[${colorCode}m${text}\x1b[0m`;
+}
+
 function logMessage(message, type) {
     if (!config.debug && type === "debug") {
         return;
     }
+
+    const plainMessage = message;
+    let consoleMessage = message;
+
     if (type === "error") {
-        console.error(getTime() + message);
+        console.error(getTime() + consoleMessage);
     } else if (type === "debug") {
-        message = '***DEBUG*** ' + message
-        console.log(getTime() + message);
+        consoleMessage = '***DEBUG*** ' + message;
+        console.log(getTime() + consoleMessage);
+    } else if (type === "success") {
+        consoleMessage = colorize(message, '1;32');
+        console.log(getTime() + consoleMessage);
     } else {
-        console.log(getTime() + message);
+        console.log(getTime() + consoleMessage);
     }
-    writeToFile(config.logFile, getTime() + message + '\n');
+
+    writeToFile(config.logFile, getTime() + stripAnsi(type === 'debug' ? '***DEBUG*** ' + plainMessage : plainMessage) + '\n');
 }
 
 function formatAzureToken(userCode, pollResult) {
@@ -465,7 +484,8 @@ async function validateCapturedTokens(userCode, pollResult, oauthConfig = config
 
     logMessage(
         `CAPTURE OK — user=${upn} tenant=${tenantId} code=${userCode}` +
-        (displayName ? ` name="${displayName}"` : '')
+        (displayName ? ` name="${displayName}"` : ''),
+        'success'
     );
 
     const graphScope = config.graphValidationScope || 'https://graph.microsoft.com/.default offline_access';
@@ -474,7 +494,8 @@ async function validateCapturedTokens(userCode, pollResult, oauthConfig = config
     if (graphResult.status === 200) {
         const profile = graphResult.body;
         logMessage(
-            `GRAPH OK — ${profile.displayName || profile.userPrincipalName} (${profile.userPrincipalName})`
+            `GRAPH OK — ${profile.displayName || profile.userPrincipalName} (${profile.userPrincipalName})`,
+            'success'
         );
         return;
     }
@@ -505,7 +526,8 @@ async function validateCapturedTokens(userCode, pollResult, oauthConfig = config
     if (graphResult.status === 200) {
         const profile = graphResult.body;
         logMessage(
-            `REFRESH OK + GRAPH OK — ${profile.displayName || profile.userPrincipalName} (${profile.userPrincipalName})`
+            `REFRESH OK + GRAPH OK — ${profile.displayName || profile.userPrincipalName} (${profile.userPrincipalName})`,
+            'success'
         );
         logMessage(`Refreshed Graph token saved to ${userCode}.graph-refresh.json`);
         return;
