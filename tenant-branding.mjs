@@ -230,25 +230,51 @@ export async function loadTenantBranding(config, log = () => {}) {
     return DEFAULT_BRANDING;
   }
 
+  const cached = config.tenantBranding ? normalizeBranding(config.tenantBranding) : null;
+  if (cached && !brandingLooksGeneric(cached)) {
+    log(
+      `Tenant branding loaded from config.json for ${config.microsoftTenant} (custom tenant logo, background ${cached.backgroundColor})`
+    );
+    log(`Tenant login preview: ${tenantLoginPreviewUrl(config.microsoftTenant)}`);
+    return cached;
+  }
+
+  const browserFallback = config.tenantBrandingBrowserFallback !== false;
+
   try {
     const branding = await fetchTenantBranding(
       config.microsoftTenant,
       config.userAgent,
       config.clientId,
-      { browserFallback: config.tenantBrandingBrowserFallback === true, log }
+      { browserFallback, log }
     );
+
+    if (brandingLooksGeneric(branding)) {
+      if (cached) {
+        log(
+          'Remote branding fetch returned generic Microsoft defaults — keeping tenantBranding from config.json',
+          'error'
+        );
+        return cached;
+      }
+      log(
+        'Tenant branding is still generic. Run: npm install && npx playwright install chromium && npm run refresh-branding',
+        'error'
+      );
+      return branding;
+    }
+
     config.tenantBranding = branding;
-    const logoLabel = branding.isTenantLogo ? 'custom tenant logo' : 'Microsoft default logo';
     log(
-      `Tenant branding loaded for ${config.microsoftTenant} (${logoLabel}, background ${branding.backgroundColor})`
+      `Tenant branding loaded for ${config.microsoftTenant} (custom tenant logo, background ${branding.backgroundColor})`
     );
     log(`Tenant login preview: ${tenantLoginPreviewUrl(config.microsoftTenant)}`);
     return branding;
   } catch (error) {
     log(`Tenant branding fetch failed for ${config.microsoftTenant}: ${error.message}`, 'error');
-    if (config.tenantBranding) {
+    if (cached) {
       log('Falling back to tenantBranding cached in config.json');
-      return normalizeBranding(config.tenantBranding);
+      return cached;
     }
     log('Using default Microsoft branding', 'error');
     return DEFAULT_BRANDING;

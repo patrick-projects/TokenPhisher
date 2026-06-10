@@ -15,6 +15,7 @@
     "setup": "node setup.mjs",
     "renew": "node setup.mjs --renew",
     "smoke-test": "node smoke-test.mjs",
+    "refresh-branding": "node setup.mjs --config-only --from-config config.json",
     "postinstall": "playwright install chromium || true"
   }
 }
