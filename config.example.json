@@ -19,9 +19,9 @@
   "threemaFrom": "YourName",
   "threemaURL": "https://msgapi.threema.ch/send_simple",
   "threemaSecret": "PutYourSecretHere",
-  "keyFilePath": "./certs/privkey.pem",
-  "certFilePath": "./certs/cert.pem",
-  "caFilePath": "./certs/origin-ca.pem",
+  "keyFilePath": "/var/lib/tokenphisher/certs/example.com/privkey.pem",
+  "certFilePath": "/var/lib/tokenphisher/certs/example.com/cert.pem",
+  "caFilePath": "/var/lib/tokenphisher/certs/example.com/origin-ca.pem",
   "userAgent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/112.0.0.0 Safari/537.36",
   "geoipallowlist": ["CH"]
 }
