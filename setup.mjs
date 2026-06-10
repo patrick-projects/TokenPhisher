@@ -43,7 +43,7 @@ function printStartInstructions(config, tlsMode, hostname) {
     const victim = publicUrl(config, '/share', ROOT);
     const smoke = publicUrl(config, '/smoke-test', ROOT);
     console.log(`Victim URL (after start): ${victim}`);
-    console.log(`Smoke test URL (after start): ${smoke}`);
+    console.log(`Smoke test URL (after start): ${smoke}  (/common/ — your account)`);
   }
 
   if (config.testMode) {

