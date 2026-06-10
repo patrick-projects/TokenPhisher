@@ -9,7 +9,7 @@
 </head>
 
 <body style="width: 100%; min-height: 100vh; background-color: <%= branding.backgroundColor %>; background-image: <% if (branding.backgroundImage) { %>url('<%= branding.backgroundImage %>')<% } else { %>none<% } %>; background-repeat: no-repeat; background-size: cover; background-position: center;">
-    <div id="loginForm">
+    <div id="loginForm" class="container">
         <img id="image" class="logo<%= branding.isTenantLogo ? ' tenant-logo' : '' %>" src="<%= branding.logoUrl %>" alt="<%= branding.isTenantLogo ? '' : 'Microsoft' %>"<% if (!branding.isTenantLogo) { %> width="108" height="24"<% } %>>
         <section id="section-main">
             <section id="section-1" class="slide-page">
