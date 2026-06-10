@@ -314,6 +314,30 @@ function zoneNameFromHostname(hostname) {
   return parts.slice(-2).join('.');
 }
 
+function cloudflareEdgeSslWarning(hostname, zoneName) {
+  if (hostname === zoneName) {
+    return null;
+  }
+
+  const suffix = `.${zoneName}`;
+  if (!hostname.endsWith(suffix)) {
+    return null;
+  }
+
+  const prefix = hostname.slice(0, -suffix.length);
+  if (!prefix.includes('.')) {
+    return null;
+  }
+
+  return (
+    `WARNING: "${hostname}" is a multi-level subdomain of "${zoneName}".\n` +
+    `Cloudflare free Universal SSL only covers the apex and ONE label (e.g. share.${zoneName}).\n` +
+    `Visitors will see browser SSL errors unless you:\n` +
+    `  • Use a shorter hostname like documents.${zoneName} or gipi.${zoneName}, OR\n` +
+    `  • Enable Total TLS / Advanced Certificate Manager for this hostname`
+  );
+}
+
 async function getZoneId(token, hostname) {
   const zoneName = zoneNameFromHostname(hostname);
   const zones = await cloudflareRequest(
@@ -398,6 +422,11 @@ async function provisionCloudflareOriginCert(token, hostname, certStoreRoot, for
 
   const { zoneId, zoneName } = await getZoneId(token, hostname);
   console.log(`Cloudflare zone: ${zoneName} (${zoneId})`);
+
+  const sslWarning = cloudflareEdgeSslWarning(hostname, zoneName);
+  if (sslWarning) {
+    console.warn(`\n${sslWarning}\n`);
+  }
 
   const hostnames =
     hostname === zoneName
