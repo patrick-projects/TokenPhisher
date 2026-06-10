@@ -340,6 +340,23 @@ async function deleteCloudflareDnsRecord(token, zoneId, recordId) {
   );
 }
 
+async function deleteExistingAcmeChallengeRecords(token, zoneId, challengeFqdn) {
+  const records = await cloudflareRequest(
+    token,
+    'GET',
+    `/zones/${zoneId}/dns_records?type=TXT&name=${encodeURIComponent(challengeFqdn)}`,
+    null,
+    { step: 'list-dns-txt' }
+  );
+  if (!records?.length) {
+    return;
+  }
+  for (const record of records) {
+    console.log(`Removing stale ACME TXT record ${record.name} ...`);
+    await deleteCloudflareDnsRecord(token, zoneId, record.id);
+  }
+}
+
 async function getOrCreateAcmeAccountKey(storeDir) {
   const { accountKeyPath } = certFilePaths(storeDir);
   if (fs.existsSync(accountKeyPath)) {
@@ -416,6 +433,7 @@ async function provisionLetsEncryptCert(token, hostname, certStoreRoot, forceRen
         }
         // keyAuthorization is already the DNS-01 digest for dns-01 challenges.
         const txtValue = keyAuthorization;
+        await deleteExistingAcmeChallengeRecords(token, zoneId, challengeFqdn);
         console.log(`Creating DNS TXT record ${challengeFqdn} ...`);
         const record = await createCloudflareTxtRecord(token, zoneId, challengeRecordName, txtValue);
         challengeRecordId = record.id;
