@@ -913,7 +913,8 @@ async function main() {
         config.tenantBranding = await fetchTenantBranding(
           discovery.tenant,
           config.userAgent,
-          config.clientId
+          config.clientId,
+          { browserFallback: true, log: (message) => console.log(`  ${message}`) }
         );
         console.log(`  tenant logo: ${config.tenantBranding.bannerLogo || 'Microsoft default'}`);
         console.log(`  tenant background: ${config.tenantBranding.backgroundColor}`);

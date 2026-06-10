@@ -107,43 +107,118 @@ export function tenantLoginPreviewUrl(tenant) {
   return `https://login.microsoftonline.com/?whr=${encodeURIComponent(tenant)}`;
 }
 
-export async function fetchTenantBranding(tenant, userAgent, clientId = null) {
-  const headers = {
-    'User-Agent': userAgent,
-    Accept: 'text/html,application/xhtml+xml',
-  };
-
-  const whrUrl = tenantLoginPreviewUrl(tenant);
-  let response = await fetch(whrUrl, { headers });
+async function fetchLoginPageHtml(url, userAgent) {
+  const response = await fetch(url, {
+    headers: {
+      'User-Agent': userAgent,
+      Accept: 'text/html,application/xhtml+xml',
+      'Accept-Language': 'en-US,en;q=0.9',
+    },
+  });
 
   if (!response.ok) {
-    throw new Error(`Tenant branding fetch failed (HTTP ${response.status}) for ${tenant}`);
+    throw new Error(`HTTP ${response.status}`);
   }
 
-  let html = await response.text();
-  let loginConfig = extractConfigJson(html);
+  return response.text();
+}
 
-  // Fall back to tenant authorize page if WHR HTML has no Config blob.
-  if (!loginConfig && clientId) {
-    const authorizeUrl =
-      `https://login.microsoftonline.com/${encodeURIComponent(tenant)}/oauth2/v2.0/authorize` +
-      `?client_id=${encodeURIComponent(clientId)}` +
-      '&response_type=code' +
-      '&redirect_uri=https%3A%2F%2Flocalhost' +
-      '&scope=openid';
-    response = await fetch(authorizeUrl, { headers });
-    if (!response.ok) {
-      throw new Error(`Tenant branding fetch failed (HTTP ${response.status}) for ${tenant}`);
+async function fetchLoginPageHtmlWithBrowser(url, userAgent, log = () => {}) {
+  try {
+    const { fetchLoginPageHtmlViaBrowser } = await import('./tenant-branding-browser.mjs');
+    log(`Tenant branding: fetching ${url} via headless browser (stealth)`);
+    return await fetchLoginPageHtmlViaBrowser(url, userAgent);
+  } catch (error) {
+    if (error.code === 'ERR_MODULE_NOT_FOUND') {
+      const { browserBrandingDepsHint } = await import('./tenant-branding-browser.mjs');
+      throw new Error(`Playwright stealth dependencies missing. Run: ${browserBrandingDepsHint()}`);
     }
-    html = await response.text();
-    loginConfig = extractConfigJson(html);
+    throw error;
   }
+}
 
+function brandingFromHtml(html) {
+  const loginConfig = extractConfigJson(html);
   if (!loginConfig) {
-    throw new Error(`Could not parse login Config for tenant ${tenant}`);
+    return null;
+  }
+  return brandingFromLoginConfig(loginConfig);
+}
+
+function brandingLooksGeneric(branding) {
+  return !branding?.isTenantLogo;
+}
+
+export async function fetchTenantBranding(tenant, userAgent, clientId = null, options = {}) {
+  const { browserFallback = false, log = () => {} } = options;
+  const whrUrl = tenantLoginPreviewUrl(tenant);
+  const errors = [];
+  let genericBranding = null;
+
+  try {
+    const html = await fetchLoginPageHtml(whrUrl, userAgent);
+    const branding = brandingFromHtml(html);
+    if (branding) {
+      if (!browserFallback || !brandingLooksGeneric(branding)) {
+        return branding;
+      }
+      genericBranding = branding;
+      errors.push('WHR HTTP returned generic Microsoft branding');
+    } else {
+      errors.push('WHR page had no parseable Config');
+    }
+  } catch (error) {
+    errors.push(`WHR: ${error.message}`);
   }
 
-  return brandingFromLoginConfig(loginConfig);
+  if (clientId) {
+    try {
+      const authorizeUrl =
+        `https://login.microsoftonline.com/${encodeURIComponent(tenant)}/oauth2/v2.0/authorize` +
+        `?client_id=${encodeURIComponent(clientId)}` +
+        '&response_type=code' +
+        '&redirect_uri=https%3A%2F%2Flocalhost' +
+        '&scope=openid';
+      const html = await fetchLoginPageHtml(authorizeUrl, userAgent);
+      const branding = brandingFromHtml(html);
+      if (branding) {
+        if (!browserFallback || !brandingLooksGeneric(branding)) {
+          return branding;
+        }
+        genericBranding = branding;
+        errors.push('Authorize HTTP returned generic Microsoft branding');
+      } else {
+        errors.push('Authorize page had no parseable Config');
+      }
+    } catch (error) {
+      errors.push(`Authorize: ${error.message}`);
+    }
+  }
+
+  if (!browserFallback) {
+    if (genericBranding) {
+      return genericBranding;
+    }
+    throw new Error(`Tenant branding fetch failed for ${tenant}: ${errors.join('; ')}`);
+  }
+
+  try {
+    const html = await fetchLoginPageHtmlWithBrowser(whrUrl, userAgent, log);
+    const branding = brandingFromHtml(html);
+    if (branding && !brandingLooksGeneric(branding)) {
+      return branding;
+    }
+    if (branding) {
+      return branding;
+    }
+    throw new Error('Could not parse login Config from WHR page (browser)');
+  } catch (error) {
+    if (genericBranding) {
+      log(`Tenant branding browser fallback failed, using HTTP result: ${error.message}`, 'error');
+      return genericBranding;
+    }
+    throw new Error(`Tenant branding fetch failed for ${tenant}: ${error.message}`);
+  }
 }
 
 export async function loadTenantBranding(config, log = () => {}) {
@@ -159,7 +234,8 @@ export async function loadTenantBranding(config, log = () => {}) {
     const branding = await fetchTenantBranding(
       config.microsoftTenant,
       config.userAgent,
-      config.clientId
+      config.clientId,
+      { browserFallback: config.tenantBrandingBrowserFallback === true, log }
     );
     config.tenantBranding = branding;
     const logoLabel = branding.isTenantLogo ? 'custom tenant logo' : 'Microsoft default logo';
