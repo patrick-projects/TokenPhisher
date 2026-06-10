@@ -3,7 +3,8 @@
   "scripts": {
     "start": "node server.js",
     "setup": "node setup.mjs",
-    "renew": "node setup.mjs --renew"
+    "renew": "node setup.mjs --renew",
+    "smoke-test": "node smoke-test.mjs"
   },
   "dependencies": {
     "acme-client": "^5.1.3",
