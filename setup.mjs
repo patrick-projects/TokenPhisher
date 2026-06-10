@@ -42,10 +42,8 @@ function printStartInstructions(config, tlsMode, hostname) {
   if (publicHost) {
     const victim = publicUrl(config, '/share', ROOT);
     const smoke = publicUrl(config, '/smoke-test', ROOT);
-    const selfTest = publicUrl(config, '/smoke-test/self', ROOT);
     console.log(`Victim URL (after start): ${victim}`);
     console.log(`Smoke test URL (after start): ${smoke}`);
-    console.log(`Self-test URL (after start): ${selfTest}`);
   }
 
   if (config.testMode) {

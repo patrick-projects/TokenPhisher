@@ -165,15 +165,9 @@ While the server is running, open the smoke test page (no geo block):
 https://your-domain/smoke-test
 ```
 
-Setup and `npm start` print this URL alongside the victim URL. The page checks config, TLS, production OAuth (gipi tenant), and `/common/` OAuth.
+Setup and `npm start` print this URL alongside the victim URL. The page checks config, TLS, production OAuth, and `/common/` OAuth.
 
-**Self-test full capture** with any Azure AD account you control (does not use production tenant):
-
-```
-https://your-domain/smoke-test/self
-```
-
-Same phishing UI as `/share`, but uses Microsoft `/common/` endpoints and polls for tokens in the server logs.
+To test a **full capture with your own account**, open the link on that page (`/smoke-test?capture=1`) — same host, uses Microsoft `/common/` endpoints instead of the client tenant.
 
 CLI alternative (server can stay up):
 
@@ -196,7 +190,7 @@ Microsoft provides **generic endpoints** that work with any Azure AD work accoun
 
 1. Join the [Microsoft 365 Developer Program](https://developer.microsoft.com/microsoft-365/dev-program)
 2. You get `something.onmicrosoft.com` + test users in the admin portal
-3. Run setup with that tenant for a dedicated lab, or use `/smoke-test/self` against production config
+3. Run setup with that tenant for a dedicated lab, or use `/smoke-test?capture=1` against production config
 
 ## Certificates
 
