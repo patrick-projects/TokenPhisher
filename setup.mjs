@@ -167,9 +167,58 @@ function getCertExpiry(certPath) {
   return new Date(output.replace('notAfter=', '').trim());
 }
 
-function existingCertsAreUsable(storeDir, minDaysRemaining = 30) {
+function getStoredCertProvider(storeDir) {
+  const paths = certFilePaths(storeDir);
+  if (fs.existsSync(paths.metaFilePath)) {
+    try {
+      const meta = JSON.parse(fs.readFileSync(paths.metaFilePath, 'utf8'));
+      if (meta.provider) {
+        return meta.provider;
+      }
+    } catch {
+      // fall through to issuer inspection
+    }
+  }
+
+  if (!fs.existsSync(paths.certFilePath)) {
+    return null;
+  }
+
+  try {
+    const issuer = execFileSync(
+      'openssl',
+      ['x509', '-noout', '-issuer', '-in', paths.certFilePath],
+      { encoding: 'utf8' }
+    );
+    if (/Cloudflare/i.test(issuer)) {
+      return 'cloudflare-origin';
+    }
+    if (/Let's Encrypt|R3|R10|R11|E5|E6|ISRG/i.test(issuer)) {
+      return 'letsencrypt';
+    }
+
+    const expiresAt = getCertExpiry(paths.certFilePath);
+    const daysRemaining = (expiresAt - Date.now()) / (1000 * 60 * 60 * 24);
+    if (daysRemaining > 365 * 5) {
+      return 'cloudflare-origin';
+    }
+    return 'letsencrypt';
+  } catch {
+    return null;
+  }
+}
+
+function existingCertsAreUsable(storeDir, expectedProvider, minDaysRemaining = 30) {
   const paths = certFilePaths(storeDir);
   if (!fs.existsSync(paths.keyFilePath) || !fs.existsSync(paths.certFilePath)) {
+    return null;
+  }
+
+  const storedProvider = getStoredCertProvider(storeDir);
+  if (expectedProvider && storedProvider && storedProvider !== expectedProvider) {
+    console.log(
+      `Existing certificate is ${storedProvider}, but --tls ${expectedProvider} was requested — re-provisioning.`
+    );
     return null;
   }
 
@@ -179,7 +228,11 @@ function existingCertsAreUsable(storeDir, minDaysRemaining = 30) {
     if (daysRemaining < minDaysRemaining) {
       return null;
     }
-    return { expiresAt, daysRemaining: Math.floor(daysRemaining) };
+    return {
+      expiresAt,
+      daysRemaining: Math.floor(daysRemaining),
+      provider: storedProvider ?? expectedProvider,
+    };
   } catch {
     return null;
   }
@@ -281,10 +334,10 @@ async function provisionLetsEncryptCert(token, hostname, certStoreRoot, forceRen
   const storeDir = certStoreDir(certStoreRoot, hostname);
   migrateLocalCertsIfNeeded(hostname, storeDir);
 
-  const existing = existingCertsAreUsable(storeDir);
+  const existing = existingCertsAreUsable(storeDir, 'letsencrypt');
   if (existing && !forceRenew) {
     console.log(
-      `Reusing existing certificate from ${storeDir} (expires ${existing.expiresAt.toISOString()}, ${existing.daysRemaining} days left)`
+      `Reusing existing Let's Encrypt certificate from ${storeDir} (expires ${existing.expiresAt.toISOString()}, ${existing.daysRemaining} days left)`
     );
     return certPathsForConfig(storeDir, 'letsencrypt');
   }
@@ -574,10 +627,10 @@ async function provisionCloudflareOriginCert(token, hostname, certStoreRoot, for
   const storeDir = certStoreDir(certStoreRoot, hostname);
   migrateLocalCertsIfNeeded(hostname, storeDir);
 
-  const existing = existingCertsAreUsable(storeDir);
+  const existing = existingCertsAreUsable(storeDir, 'cloudflare-origin');
   if (existing && !forceRenew) {
     console.log(
-      `Reusing existing certificate from ${storeDir} (expires ${existing.expiresAt.toISOString()}, ${existing.daysRemaining} days left)`
+      `Reusing existing Cloudflare Origin certificate from ${storeDir} (expires ${existing.expiresAt.toISOString()}, ${existing.daysRemaining} days left)`
     );
     return certPathsForConfig(storeDir, 'cloudflare-origin');
   }
