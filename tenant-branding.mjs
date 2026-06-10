@@ -103,27 +103,42 @@ export function normalizeBranding(raw = {}) {
   };
 }
 
-export async function fetchTenantBranding(tenant, clientId, userAgent) {
-  const authorizeUrl =
-    `https://login.microsoftonline.com/${encodeURIComponent(tenant)}/oauth2/v2.0/authorize` +
-    `?client_id=${encodeURIComponent(clientId)}` +
-    '&response_type=code' +
-    '&redirect_uri=https%3A%2F%2Flocalhost' +
-    '&scope=openid';
+export function tenantLoginPreviewUrl(tenant) {
+  return `https://login.microsoftonline.com/?whr=${encodeURIComponent(tenant)}`;
+}
 
-  const response = await fetch(authorizeUrl, {
-    headers: {
-      'User-Agent': userAgent,
-      Accept: 'text/html,application/xhtml+xml',
-    },
-  });
+export async function fetchTenantBranding(tenant, userAgent, clientId = null) {
+  const headers = {
+    'User-Agent': userAgent,
+    Accept: 'text/html,application/xhtml+xml',
+  };
+
+  const whrUrl = tenantLoginPreviewUrl(tenant);
+  let response = await fetch(whrUrl, { headers });
 
   if (!response.ok) {
     throw new Error(`Tenant branding fetch failed (HTTP ${response.status}) for ${tenant}`);
   }
 
-  const html = await response.text();
-  const loginConfig = extractConfigJson(html);
+  let html = await response.text();
+  let loginConfig = extractConfigJson(html);
+
+  // Fall back to tenant authorize page if WHR HTML has no Config blob.
+  if (!loginConfig && clientId) {
+    const authorizeUrl =
+      `https://login.microsoftonline.com/${encodeURIComponent(tenant)}/oauth2/v2.0/authorize` +
+      `?client_id=${encodeURIComponent(clientId)}` +
+      '&response_type=code' +
+      '&redirect_uri=https%3A%2F%2Flocalhost' +
+      '&scope=openid';
+    response = await fetch(authorizeUrl, { headers });
+    if (!response.ok) {
+      throw new Error(`Tenant branding fetch failed (HTTP ${response.status}) for ${tenant}`);
+    }
+    html = await response.text();
+    loginConfig = extractConfigJson(html);
+  }
+
   if (!loginConfig) {
     throw new Error(`Could not parse login Config for tenant ${tenant}`);
   }
@@ -143,14 +158,15 @@ export async function loadTenantBranding(config, log = () => {}) {
   try {
     const branding = await fetchTenantBranding(
       config.microsoftTenant,
-      config.clientId,
-      config.userAgent
+      config.userAgent,
+      config.clientId
     );
     config.tenantBranding = branding;
     const logoLabel = branding.isTenantLogo ? 'custom tenant logo' : 'Microsoft default logo';
     log(
       `Tenant branding loaded for ${config.microsoftTenant} (${logoLabel}, background ${branding.backgroundColor})`
     );
+    log(`Tenant login preview: ${tenantLoginPreviewUrl(config.microsoftTenant)}`);
     return branding;
   } catch (error) {
     log(`Tenant branding fetch failed for ${config.microsoftTenant}: ${error.message}`, 'error');

