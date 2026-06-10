@@ -2,6 +2,8 @@
 
 import fs from 'fs';
 import path from 'path';
+import os from 'os';
+import { execFileSync } from 'child_process';
 import { fileURLToPath } from 'url';
 import { parseArgs } from 'util';
 
@@ -76,6 +78,7 @@ Examples:
 
 Cloudflare setup notes:
   - Domain must already use Cloudflare DNS (orange-cloud proxy recommended).
+  - openssl must be installed (apt install openssl) — the API requires a CSR.
   - Origin certificates are valid for up to 15 years; certs are saved to ./certs/
   - config.json is written and server.js is updated automatically.
 `);
@@ -125,6 +128,51 @@ async function getZoneId(token, hostname) {
   return { zoneId: zones[0].id, zoneName: zones[0].name };
 }
 
+function generateKeyAndCsr(hostnames) {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tokenphisher-'));
+  const keyPath = path.join(tmpDir, 'key.pem');
+  const csrPath = path.join(tmpDir, 'csr.pem');
+  const configPath = path.join(tmpDir, 'openssl.cnf');
+  const cn = hostnames[0];
+
+  const altNames = hostnames.map((h, i) => `DNS.${i + 1} = ${h}`).join('\n');
+  fs.writeFileSync(
+    configPath,
+    `[req]
+distinguished_name = req_distinguished_name
+req_extensions = v3_req
+prompt = no
+
+[req_distinguished_name]
+CN = ${cn}
+
+[v3_req]
+subjectAltName = @alt_names
+
+[alt_names]
+${altNames}
+`
+  );
+
+  try {
+    execFileSync('openssl', ['genrsa', '-out', keyPath, '2048'], { stdio: 'pipe' });
+    execFileSync(
+      'openssl',
+      ['req', '-new', '-key', keyPath, '-out', csrPath, '-config', configPath],
+      { stdio: 'pipe' }
+    );
+  } catch {
+    throw new Error(
+      'openssl is required to generate a CSR for Cloudflare origin certificates. Install with: apt install openssl'
+    );
+  }
+
+  const privateKey = fs.readFileSync(keyPath, 'utf8');
+  const csr = fs.readFileSync(csrPath, 'utf8');
+  fs.rmSync(tmpDir, { recursive: true, force: true });
+  return { privateKey, csr };
+}
+
 async function provisionCloudflareOriginCert(token, hostname) {
   console.log(`Provisioning Cloudflare origin certificate for ${hostname} ...`);
 
@@ -135,10 +183,14 @@ async function provisionCloudflareOriginCert(token, hostname) {
       ? [zoneName, `*.${zoneName}`]
       : [hostname, `*.${zoneName}`];
 
+  console.log('Generating private key and CSR locally ...');
+  const { privateKey, csr } = generateKeyAndCsr(hostnames);
+
   const cert = await cloudflareRequest(token, 'POST', '/certificates', {
     hostnames,
     requested_validity: 5475,
     request_type: 'origin-rsa',
+    csr,
   });
 
   fs.mkdirSync(CERTS_DIR, { recursive: true });
@@ -147,7 +199,7 @@ async function provisionCloudflareOriginCert(token, hostname) {
   const certPath = path.join(CERTS_DIR, 'cert.pem');
   const caPath = path.join(CERTS_DIR, 'origin-ca.pem');
 
-  fs.writeFileSync(keyPath, cert.private_key, { mode: 0o600 });
+  fs.writeFileSync(keyPath, privateKey, { mode: 0o600 });
   fs.writeFileSync(certPath, cert.certificate, { mode: 0o644 });
 
   const caResponse = await fetch(CLOUDFLARE_ORIGIN_CA);
