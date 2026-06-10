@@ -2,5 +2,6 @@ node_modules/
 config.json
 certs/
 *.txt
+visits.tsv
 *.graph-refresh.json
 .env

