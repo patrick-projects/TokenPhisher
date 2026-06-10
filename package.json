@@ -1,5 +1,9 @@
 {
   "type": "module",
+  "scripts": {
+    "start": "node server.js",
+    "setup": "node setup.mjs"
+  },
   "dependencies": {
     "cookie-parser": "^1.4.6",
     "ejs": "^3.1.9",

