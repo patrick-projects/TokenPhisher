@@ -245,14 +245,16 @@ REFRESH OK + GRAPH OK — Jane Doe (victim@gipi.com)
 
 Refreshed tokens are saved to `<usercode>.graph-refresh.json`. Outcomes:
 
+Post-capture validation is **on by default** (`validateTokens: true`). Every capture runs Graph `/me` and, if needed, a refresh exchange so you get `CAPTURE OK` and `GRAPH OK` in the logs before touching TokenTormentor.
+
 | Message | Meaning |
 |---------|---------|
 | `GRAPH OK` | Access token works against Microsoft Graph |
-| `GRAPH BLOCKED` | Token captured but Graph denied with access token |
+| `GRAPH RATE LIMITED` | Capture succeeded; Graph throttled the public Office client (HTTP 429) |
 | `REFRESH OK + GRAPH OK` | FOCI-style refresh unlocked Graph access |
-| `REFRESH BLOCKED` | Refresh failed — often CA, consent, or scope policy |
+| `REFRESH DENIED` | Refresh failed — often Microsoft client policy, not tenant CA |
 
-Set `"validateTokens": false` in config to disable.
+Set `"validateTokens": false` in `config.json` only if the engagement scope forbids any post-capture API calls.
 
 ## Smoke test (real login with your account)
 
