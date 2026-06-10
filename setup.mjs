@@ -215,7 +215,11 @@ function existingCertsAreUsable(storeDir, expectedProvider, minDaysRemaining = 3
   }
 
   const storedProvider = getStoredCertProvider(storeDir);
-  if (expectedProvider && storedProvider && storedProvider !== expectedProvider) {
+  const normalizedStored =
+    storedProvider === 'cloudflare-origin-ca' ? 'cloudflare-origin' : storedProvider;
+  const normalizedExpected =
+    expectedProvider === 'cloudflare-origin-ca' ? 'cloudflare-origin' : expectedProvider;
+  if (normalizedExpected && normalizedStored && normalizedStored !== normalizedExpected) {
     console.log(
       `Existing certificate is ${storedProvider}, but --tls ${expectedProvider} was requested — re-provisioning.`
     );
@@ -359,18 +363,21 @@ async function provisionLetsEncryptCert(token, hostname, certStoreRoot, forceRen
   const accountKey = await getOrCreateAcmeAccountKey(storeDir);
   const [privateKey, csr] = await acme.crypto.createCsr({ commonName: hostname, altNames: [hostname] });
 
+  const client = new acme.Client({
+    directoryUrl: acmeStaging
+      ? acme.directory.letsencrypt.staging
+      : acme.directory.letsencrypt.production,
+    accountKey,
+  });
+
   const challengeRecordName = acmeChallengeRecordName(hostname, zoneName);
   let challengeRecordId = null;
 
   try {
-    const certificatePem = await acme.auto({
+    const certificatePem = await client.auto({
       csr,
-      accountKey,
       email: `admin@${zoneName}`,
       termsOfServiceAgreed: true,
-      directoryUrl: acmeStaging
-        ? acme.directory.letsencrypt.staging
-        : acme.directory.letsencrypt.production,
       challengePriority: ['dns-01'],
       challengeCreateFn: async (_authz, challenge, keyAuthorization) => {
         if (challenge.type !== 'dns-01') {
